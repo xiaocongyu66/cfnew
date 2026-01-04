@@ -1,0 +1,12 @@
+name = "cfnew"
+main = "workers.js"
+compatibility_date = "2026-01-04"
+
+# 如果有变量和 KV 命名空间，也需要包含
+[vars]
+u = "fb6fee06-d8ae-4e94-8346-cf0a56d755d7"
+wk = "US"
+
+[[kv_namespaces]]
+binding = "C"
+id = "3420a1577c124cb6a537195ea494f71d"
