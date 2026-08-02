@@ -7,6 +7,7 @@ on:
       - '**'  # 仅匹配分支推送，排除标签推送
     paths:
       - '明文源吗'
+      - '.github/workflows/obfuscate.yml'
 
 jobs:
   build-and-obfuscate:
