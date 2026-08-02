@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: '18'
 
+      - name: Syntax check source file
+        run: |
+          node --check "明文源吗" || { echo "明文源吗 语法检查失败"; exit 1; }
+          echo "明文源吗 语法检查通过"
+
       - name: Install Obfuscator
         run: npm install javascript-obfuscator
 
