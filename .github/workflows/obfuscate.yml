@@ -23,7 +23,9 @@ jobs:
 
       - name: Syntax check source file
         run: |
-          node --check "明文源吗" || { echo "明文源吗 语法检查失败"; exit 1; }
+          cp "明文源吗" "_check.mjs"
+          node --check "_check.mjs" || { echo "明文源吗 语法检查失败"; exit 1; }
+          rm -f "_check.mjs"
           echo "明文源吗 语法检查通过"
 
       - name: Install Obfuscator
