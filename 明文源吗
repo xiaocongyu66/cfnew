@@ -490,7 +490,11 @@ async function 确保数据库架构() {
     数据库初始化错误 = 'D1 数据库未绑定（绑定名必须为 DB）';
     return false;
   }
-  if (数据库架构已确认) return true;
+  if (数据库架构已确认) {
+    // A previous isolate may retain a transient schema error after the tables exist.
+    if (数据库初始化错误.startsWith('D1 自动建表失败：')) 数据库初始化错误 = '';
+    return true;
+  }
   if (!数据库架构初始化任务) {
     数据库架构初始化任务 = (async () => {
       try {
@@ -530,6 +534,7 @@ async function 初始化数据库(本地值) {
     return false;
   }
   if (已初始化账号 && 已初始化数据库绑定 === 数据库 && 已初始化环境UUID === 环境UUID && 已初始化用户 === 初始管理员用户) {
+    数据库初始化错误 = '';
     return true;
   }
   // 幂等初始化；失败不会设置完成标记，后续请求可自动重试。
@@ -778,6 +783,10 @@ async function 读取安装检查() {
     }
   }
   const 表完整 = 表.accounts && 表.keys && 表.keyCountries;
+  if (表完整 && 管理员账号已创建 && 数据库初始化错误.startsWith('D1 自动建表失败：')) {
+    数据库架构已确认 = true;
+    数据库初始化错误 = '';
+  }
   const 错误 = 数据库初始化错误 || 查询错误;
   const 就绪 = !!数据库 && !!会话密钥 && !!初始管理员用户 && !!初始管理员密码 && 表完整 && 管理员账号已创建 && !错误;
   let 下一步 = '登录配置已就绪。';
