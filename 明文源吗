@@ -2633,10 +2633,12 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
   const 工作器域名504 = 网址505.hostname;
   const 目标503 = 网址505.searchParams.get('target') || 'base64';
   const 别名命名器502 = 创建值节点命名器(false);
+  const 订阅ECH值 = 网址505.searchParams.get('ech');
+  const 订阅启用ECH = 订阅ECH值 === null ? 启用加密客户端问候 : 是否开启值(订阅ECH值, 启用加密客户端问候);
 
   // 如果启用了ECH，使用自定义值
   let 加密客户端问候配置501 = null;
-  if (启用加密客户端问候) {
+  if (订阅启用ECH) {
     const 域名系统值500 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
     const 加密客户端问候域名499 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
     加密客户端问候配置501 = `${加密客户端问候域名499}+${域名系统值500}`;
@@ -2787,7 +2789,7 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
   };
 
   // 添加ECH状态到响应头
-  if (启用加密客户端问候) {
+  if (订阅启用ECH) {
     响应头部列表['X-ECH-Status'] = 'ENABLED';
     if (加密客户端问候配置501) {
       响应头部列表['X-ECH-Config-Length'] = String(加密客户端问候配置501.length);
@@ -2853,7 +2855,7 @@ function 生成链接列表来源源(列表482, 用户481, 工作器域名480, �
           encryption: 'none',
           security: 'tls',
           sni: 工作器域名480,
-          fp: 启用加密客户端问候 ? 'chrome' : 'randomized',
+          fp: 加密客户端问候配置479 ? 'chrome' : 'randomized',
           type: 'ws',
           host: 工作器域名480,
           path: 网页套接字路径471
@@ -2861,7 +2863,7 @@ function 生成链接列表来源源(列表482, 用户481, 工作器域名480, �
         处理值应用层协议协商值(网页套接字参数459);
 
         // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-        if (启用加密客户端问候) {
+        if (加密客户端问候配置479) {
           const 域名系统值458 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
           const 加密客户端问候域名457 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
           网页套接字参数459.set('ech', `${加密客户端问候域名457}+${域名系统值458}`);
@@ -2944,7 +2946,7 @@ async function 生成木马链接列表来源源(列表455, 用户454, 工作器
         处理值应用层协议协商值(网页套接字参数436);
 
         // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-        if (启用加密客户端问候) {
+        if (加密客户端问候配置452) {
           const 域名系统值435 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
           const 加密客户端问候域名434 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
           网页套接字参数436.set('ech', `${加密客户端问候域名434}+${域名系统值435}`);
@@ -4650,11 +4652,11 @@ function 生成链接列表来源新地址列表(列表100, 用户99, 工作器�
     const 安全地址87 = 项目89.ip.includes(':') ? `[${项目89.ip}]` : 项目89.ip;
     if (云墙安全超文本端口93.includes(端口88)) {
       const 网页套接字节点名称86 = 制作节点名称90(项目89);
-      let 链接85 = `${协议}://${用户99}@${安全地址87}:${端口88}?encryption=none&security=tls&sni=${工作器域名98}&fp=${启用加密客户端问候 ? 'chrome' : 'randomized'}&type=ws&host=${工作器域名98}&path=${网页套接字路径91}`;
+      let 链接85 = `${协议}://${用户99}@${安全地址87}:${端口88}?encryption=none&security=tls&sni=${工作器域名98}&fp=${加密客户端问候配置97 ? 'chrome' : 'randomized'}&type=ws&host=${工作器域名98}&path=${网页套接字路径91}`;
       if (自定义应用层协议协商) 链接85 += `&alpn=${encodeURIComponent(自定义应用层协议协商)}`;
 
       // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-      if (启用加密客户端问候) {
+      if (加密客户端问候配置97) {
         const 域名系统值84 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
         const 加密客户端问候域名83 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
         链接85 += `&ech=${encodeURIComponent(`${加密客户端问候域名83}+${域名系统值84}`)}`;
@@ -4669,11 +4671,11 @@ function 生成链接列表来源新地址列表(列表100, 用户99, 工作器�
       }
     } else {
       const 网页套接字节点名称80 = 制作节点名称90(项目89);
-      let 链接79 = `${协议}://${用户99}@${安全地址87}:${端口88}?encryption=none&security=tls&sni=${工作器域名98}&fp=${启用加密客户端问候 ? 'chrome' : 'randomized'}&type=ws&host=${工作器域名98}&path=${网页套接字路径91}`;
+      let 链接79 = `${协议}://${用户99}@${安全地址87}:${端口88}?encryption=none&security=tls&sni=${工作器域名98}&fp=${加密客户端问候配置97 ? 'chrome' : 'randomized'}&type=ws&host=${工作器域名98}&path=${网页套接字路径91}`;
       if (自定义应用层协议协商) 链接79 += `&alpn=${encodeURIComponent(自定义应用层协议协商)}`;
 
       // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-      if (启用加密客户端问候) {
+      if (加密客户端问候配置97) {
         const 域名系统值78 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
         const 加密客户端问候域名77 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
         链接79 += `&ech=${encodeURIComponent(`${加密客户端问候域名77}+${域名系统值78}`)}`;
@@ -4703,7 +4705,7 @@ function 生成扩展超文本链接列表来源源(列表76, 用户75, 工作�
       mode: 'stream-one'
     });
     处理值应用层协议协商值(参数);
-    if (启用加密客户端问候) {
+    if (加密客户端问候配置73) {
       const 域名系统值64 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
       const 加密客户端问候域名63 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
       参数.set('ech', `${加密客户端问候域名63}+${域名系统值64}`);
@@ -4728,7 +4730,7 @@ async function 生成木马链接列表来源新地址列表(列表, 用户, 工
       if (自定义应用层协议协商) 链接59 += `&alpn=${encodeURIComponent(自定义应用层协议协商)}`;
 
       // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-      if (启用加密客户端问候) {
+      if (加密客户端问候配置) {
         const 域名系统值58 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
         const 加密客户端问候域名57 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
         链接59 += `&ech=${encodeURIComponent(`${加密客户端问候域名57}+${域名系统值58}`)}`;
@@ -4747,7 +4749,7 @@ async function 生成木马链接列表来源新地址列表(列表, 用户, 工
       if (自定义应用层协议协商) 链接 += `&alpn=${encodeURIComponent(自定义应用层协议协商)}`;
 
       // 如果启用了ECH，添加ech参数（ECH需要伪装成Chrome浏览器）
-      if (启用加密客户端问候) {
+      if (加密客户端问候配置) {
         const 域名系统值 = 自定义域名系统 || 'https://223.5.5.5/dns-query';
         const 加密客户端问候域名 = 自定义加密客户端问候域名 || 'cloudflare-ech.com';
         链接 += `&ech=${encodeURIComponent(`${加密客户端问候域名}+${域名系统值}`)}`;
