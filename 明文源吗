@@ -494,7 +494,11 @@ async function 确保数据库架构() {
   if (!数据库架构初始化任务) {
     数据库架构初始化任务 = (async () => {
       try {
-        await 数据库.exec(数据库架构SQL);
+        // D1 may reject a multi-statement exec when a statement spans lines;
+        // run each schema statement independently so initialization is retryable.
+        for (const sql of 数据库架构SQL.split(';').map((value) => value.trim()).filter(Boolean)) {
+          await 数据库.prepare(sql).run();
+        }
         数据库架构已确认 = true;
         数据库初始化错误 = '';
         return true;
@@ -1845,10 +1849,11 @@ function 生成值值589(链接列表588, 本地值587 = {}) {
     url: 'https://x.ai/robots.txt'
   }];
   const 站点组名称 = 名称列表584.length ? 站点测速定义.map(定义 => 定义.name) : [];
+  const 自动测速组 = 名称列表584.length > 1 ? ['  - name: "⚡ 自动测速"', '    type: url-test', '    url: "https://www.gstatic.com/generate_204"', '    interval: 300', '    tolerance: 50', '    proxies:', 节点仅] : [];
   const 站点测速组 = 名称列表584.length ? 站点测速定义.flatMap(定义 => ['  - name: "' + 定义.name + '"', '    type: url-test', '    url: "' + 定义.url + '"', '    interval: 300', '    tolerance: 50', '    proxies:', 节点仅]) : [];
   const 全部节点引用 = 名称列表584.length ? [...(名称列表584.length > 1 ? ['      - "⚡ 自动测速"'] : []), ...站点组名称.map(名称 => `      - ${处理本地值622(名称)}`), 节点仅] : [节点仅];
   const 站点组引用 = 站点组名称.length ? 站点组名称 : 名称列表584;
-  const 值值577 = [解码64('cHJveHktZ3JvdXBzOg=='), ...站点测速组, '  - name: "🚀 节点选择"', '    type: select', '    proxies:', '      - "🎯 全球直连"', ...全部节点引用, '  - name: "🌍 国外媒体"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+  const 值值577 = [解码64('cHJveHktZ3JvdXBzOg=='), ...自动测速组, ...站点测速组, '  - name: "🚀 节点选择"', '    type: select', '    proxies:', '      - "🎯 全球直连"', ...全部节点引用, '  - name: "🌍 国外媒体"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     extraGroups: 站点组引用
   }), '  - name: "📺 哔哩哔哩"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     directFirst: true
