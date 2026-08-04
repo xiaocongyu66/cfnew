@@ -96,11 +96,16 @@ jobs:
           EOF
           node obfuscate.js
 
+      - name: Build Pages package
+        run: |
+          cp "少年你相信光吗" "_worker.js"
+          zip -j -q Pages.zip _worker.js
+
       - name: Commit and push the obfuscated file
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add '少年你相信光吗'
+          git add '少年你相信光吗' '_worker.js' 'Pages.zip'
           if git diff --staged --quiet; then
             echo "No changes to commit, the obfuscated file is already up-to-date."
           else

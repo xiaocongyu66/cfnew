@@ -35,9 +35,13 @@
 
 - 订阅转换内部实现：Clash / Stash / Sing-box / Surge / Loon / Quantumult X 配置全部由 Worker 直接生成，不再依赖任何外部 sub-converter
   - 完整规则集：Clash 使用 Loyalsoldier `rule-providers`；Sing-box 使用 MetaCubeX SRS；Surge / Loon / QuanX 使用 ACL4SSR / blackmatrix7 远端规则
-  - 各策略分组均包含「策略组 + 全部节点」，可直接切换具体节点（已移除「自动选择」url-test，避免周期性测速浪费请求）
+  - 各策略分组均包含「策略组 + 全部节点」，可直接切换具体节点；多节点时提供「自动测速」url-test 组
+  - 不再按 Worker 地区优先筛选或排序，订阅保留所有来源节点；Clash/Mihomo 与 sing-box 额外提供 GPT、Google、X/Twitter、xAI 站点可用性测速组
   - 修复 Clash IPv6 节点 `server` 被解析为数组、代理组 `🎯 全球直连` ↔ `🚀 节点选择` 循环引用等问题
 - 传输优化：参考 GrainTCP 思路优化 WebSocket/TCP 转发，上行小包队列合并、下行小包聚合、大包直发，并优化 VLESS 解析热路径
+- 节点测速：Clash/Mihomo 与 sing-box 订阅默认生成「自动测速」组，客户端会选择延迟较低的节点
+- 传输参数可调：可通过 KV 配置 `packetUp`、`packetDown`、`packetQueue`、`packetTail`、`packetDelay`、`connectRace`、`firstByteTimeout`，数值会自动限制在安全范围
+- 协议边界：当前 Worker 支持 VLESS、Trojan、xhttp；不支持 Hysteria2（hy2 需要 QUIC/UDP 服务端，Cloudflare Worker 的 `cloudflare:sockets` 只能建立 TCP/TLS 出站连接）
 - 图形化 ALPN：新增 `alpn` 下拉选项，留空时不写 `alpn`，也可选择 `h3`、`h2`、`http/1.1` 或组合值
 - 节点别名简化：域名统一为 `优选域名-序号`，IPv6 统一为 `IPv6优选-序号`，IPv4 使用 `isp-colo-序号`
 - KV 配置缓存：30s 短窗口 + 跨 isolate 版本键 `c_ver`，保存后无需刷新两次
@@ -59,7 +63,7 @@
 ## v2.9.6 更新
 
 - 兼容 Xray-core v26.3.27
-- 新增香港 (HK) 地区 ProxyIP 和地区选择
+- 新增香港 (HK) ProxyIP 备用地址
 - KV 读取性能优化：5 小时内存缓存，减少 99% 以上的 KV 读取量
 - 无效请求拦截：非法路径直接返回 404，不再触发 KV 读取
 - 修复优选列表保存时 SOCKS5 配置 key 错误的问题
@@ -72,9 +76,9 @@
 
 ## v2.9.4 更新
 
-- 支持客户端通过 WebSocket path 参数覆盖连接级变量（`p`、`wk`、`rm`、`s`）
+- 支持客户端通过 WebSocket path 参数覆盖连接级变量（`p`、`s`）
   - 无需为每个节点单独部署 Worker，在分享链接的 path 里直接写参数即可
-  - 优先级：path 参数 > KV/环境变量全局配置 > 自动检测
+  - 优先级：path 参数 > KV/环境变量全局配置
   - 详见下方「[客户端 path 参数](#客户端-path-参数)」说明
 
 ## v2.9.3 更新
@@ -119,14 +123,17 @@
 
 订阅每15分钟自动优选一次
 
+#### Pages 打包
+
+`.github/workflows/obfuscate.yml` 会在源码变更后自动生成混淆版 `_worker.js` 和 `Pages.zip`。`Pages.zip` 只包含部署文件，不包含 UUID、D1/KV 配置或环境变量；提交完成后可直接下载仓库中的压缩包上传到 Cloudflare Pages。
+
 #### 基础配置
 | 变量名 | 值 | 说明 |
 | :--- | :--- | :--- |
 | `u` | 你的 UUID | 必需，用于访问订阅和配置界面 |
-| `p` | proxyip | 可选，自定义ProxyIP地址和端口，支持 IPv4/IPv6/域名。设置后 `wk` 地区匹配失效（互斥）。也可在节点 path 里单独指定 |
+| `p` | proxyip | 可选，自定义ProxyIP地址和端口，支持 IPv4/IPv6/域名。也可在节点 path 里单独指定 |
 | `s` | 出站代理地址 | 可选。支持 SOCKS5 和 HTTP/HTTPS 代理，见下方「[出站代理](#出站代理)」。也可在节点 path 里单独指定 |
 | `d` | 自定义路径 | 可选，如 `/mypath` 或 `/path/to/sub`，不填用UUID路径。路径没 `/` 开头会自动补上 |
-| `wk` | 地区代码 | 可选，手动指定Worker地区，如 `SG`、`HK`、`US`、`JP`。设置 `p` 后此项失效（互斥）。也可在节点 path 里单独指定 |
 
 #### 协议配置
 
@@ -142,8 +149,9 @@
 #### 图形化配置（推荐）
 
 1. 在Workers中创建KV命名空间，绑定环境变量 `C`
-2. 部署后访问 `/{你的UUID}` 使用图形化配置
-3. 改完配置立即生效，不用重新部署
+2. 部署后访问 `/admin` 登录管理面板
+3. 在「传输调节」页修改包大小、队列、竞速和超时参数
+4. 改完配置立即生效，不用重新部署
 
 #### 高级控制
 | 变量名 | 值 | 说明 |
@@ -159,15 +167,41 @@
 | `ech` | yes/no | 可选，启用ECH功能（默认禁用，启用后自动开启仅TLS模式） |
 | `alpn` | ALPN列表 | 可选，只写入TLS节点链接参数，留空则不写 |
 | `yxby` | yes | 可选，设为`yes`关闭所有优选功能 |
-| `rm` | no | 可选，设为`no`关闭地区智能匹配 |
 | `ae` | yes | 可选，设为`yes`允许API管理（默认关闭） |
+
+#### 传输速度参数（KV）
+
+这些参数通过管理 API 保存到 KV 后立即生效，单位可写字节或 `K/KB/M/MB`：
+
+| 参数 | 默认值 | 有效范围 | 作用 |
+| :--- | ---: | ---: | :--- |
+| `packetUp` | `32K` | `8K-128K` | 上行小包合并大小 |
+| `packetDown` | `32K` | `8K-128K` | 下行聚合大小 |
+| `packetQueue` | `512K` | `64K-2M` | 上行待发送队列上限 |
+| `packetTail` | `512` | `128-4096` | 下行尾包阈值（字节） |
+| `packetDelay` | `0` | `0-20` | 下行聚合等待时间（毫秒） |
+| `connectRace` | `2` | `1-3` | 同一目标并发竞速连接数 |
+| `firstByteTimeout` | `3500` | `1000-10000` | 首字节超时（毫秒），超时后触发回退 |
+
+通常保持默认值即可；高带宽场景可适当增大 `packetUp`/`packetDown`，高延迟场景可保持 `connectRace=2`。
+
+#### 节点可用性分类
+
+订阅会展示所有来源节点，不再按 Worker 所在地区隐藏节点。Clash/Mihomo 和 sing-box 会在客户端本地为每个站点建立测速组：
+
+- `✅ GPT 可用`：`https://chatgpt.com/`
+- `✅ Google 可用`：`https://www.google.com/generate_204`
+- `✅ X/Twitter 可用`：`https://x.com/`
+- `✅ xAI 可用`：`https://x.ai/`
+
+这些组由客户端从节点出口实际探测，能通过探测的节点会被自动选中；「🚀 节点选择」仍保留全部节点，方便手动检查。Worker 无法从边缘侧准确判断某个节点出口是否被 GPT、Google、X 或 xAI 封锁，因此不会在服务端武断标记「IP 好/脏」。
 
 #### KV存储设置（推荐）
 
 1. 在Cloudflare Workers中创建KV命名空间
 2. 在Workers设置中绑定KV，变量名设为 `C`
 3. 重新部署
-4. 访问 `/{你的UUID}` 使用图形化配置
+4. 访问 `/admin` 登录后使用「传输调节」和 Key 管理
 
 #### API使用
 1. 下载优选软件：https://github.com/byJoey/yx-tools/releases
@@ -287,10 +321,10 @@ https://user:pass@proxy.example.com:8443
 
 #### 自定义路径（d变量）
 
-- 不用UUID当路径了，可以自己设置
+- 可以使用自定义路径作为主订阅入口
 - 支持多级路径，如 `/path/to/sub`
 - 路径没 `/` 开头会自动补上
-- 自定义路径后UUID路径自动禁用
+- 启用 D1 多 Key 后，各个已启用 UUID 仍可直接作为独立订阅入口
 - 可以随时在图形界面改路径
 
 #### 图形化配置
@@ -333,37 +367,23 @@ v2.9.4 新增。在 VLESS/Trojan 分享链接的 `path` 字段里追加查询参
 | 参数 | 作用 | 示例 |
 | :--- | :--- | :--- |
 | `p` | 覆盖 ProxyIP（支持带端口） | `p=1.1.1.1` 或 `p=1.2.3.4:8443` |
-| `wk` | 覆盖 Worker 地区 | `wk=jp`、`wk=us`、`wk=sg` |
-| `rm` | 关闭地区智能匹配 | `rm=no` |
 | `s` | 覆盖出站代理 | `s=user:pass@host:1080`、`s=http://user:pass@host:8080` |
 
-**优先级：path 参数 > KV/环境变量 > 自动检测**
-
-> ⚠️ **`p` 和 `wk` 互斥**：设置 `p` 后会直接使用指定的 ProxyIP，`wk` 的地区匹配逻辑被完全跳过，两者同时写只有 `p` 生效。
+**优先级：path 参数 > KV/环境变量**
 
 path 示例：
 ```
-# 指定 ProxyIP（不要同时写 wk）
+# 指定 ProxyIP
 /?ed=2048&p=1.1.1.1
 /?ed=2048&p=proxy.example.com:443
 /?ed=2048&p=[2001:db8::1]:443
 
-# 指定地区（让 Worker 自动选该地区的 ProxyIP）
-/?ed=2048&wk=jp
-/?ed=2048&wk=sg&rm=no
-
-# 指定出站代理（可与 wk 搭配）
-/?ed=2048&s=user:pass@proxy.host:1080&wk=us
-/?ed=2048&s=http://user:pass@proxy.host:8080&wk=us
+# 指定出站代理
+/?ed=2048&s=user:pass@proxy.host:1080
+/?ed=2048&s=http://user:pass@proxy.host:8080
 ```
 
 > 不在上表中的变量（如 `ev`、`et`、`yx` 等）属于订阅生成级配置，在 WebSocket 握手阶段已过路由，放在 path 里无效，仍需在环境变量或 KV 中设置。
-
-#### 手动指定地区
-
-- 可以手动指定Worker地区，覆盖自动检测
-- 设置方式：`wk=SG` 或图形界面选择，或在节点 path 里加 `wk=SG`
-- 支持：US、SG、JP、HK、KR、DE、SE、NL、FI、GB
 
 #### 优选节点命名
 
@@ -374,12 +394,11 @@ path 示例：
 
 #### 系统状态
 
-- 显示Worker地区、检测方式、ProxyIP状态
-- 选择逻辑：同地区 → 邻近地区 → 其他地区
+- 显示 Worker、ProxyIP 和节点可用性状态
+- 订阅不再按地区筛选，所有来源节点都会保留
 
 #### 高级控制
 
-- `rm=no` 关闭地区智能匹配
 - `qj=no` 优先直连，失败再走代理；`qj=only` 只走代理，连不上直接断开
 - `dkby=yes` 只生成TLS节点
 - `ech=yes` 启用ECH功能（启用后自动开启仅TLS模式）

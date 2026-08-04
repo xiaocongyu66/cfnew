@@ -17,7 +17,8 @@ let 启用代理降级 = false;
 let 仅走代理 = false;
 let 禁用非传输层安全 = false;
 let 禁用优选 = false;
-let 启用地区匹配 = true;
+// 节点订阅不再按 Worker 地区筛选或排序；所有来源节点都保留。
+let 启用地区匹配 = false;
 let 当前工作器地区 = '';
 let 手动工作器地区 = '';
 let 优选地址源 = '';
@@ -56,6 +57,13 @@ const 配置默认值 = {
   customDNS: 'https://223.5.5.5/dns-query',
   customECHDomain: 'cloudflare-ech.com',
   alpn: '',
+  packetUp: '32768',
+  packetDown: '32768',
+  packetQueue: '524288',
+  packetTail: '512',
+  packetDelay: '0',
+  connectRace: '2',
+  firstByteTimeout: '3500',
   d: '',
   p: '',
   yx: '',
@@ -68,7 +76,7 @@ const 配置默认值 = {
   epi: 'yes',
   egi: 'yes',
   ae: '',
-  rm: '',
+  rm: 'no',
   qj: '',
   dkby: 'no',
   yxby: '',
@@ -140,6 +148,13 @@ function 获取环境配置快照(环境值 = {}) {
     customDNS: ['customDNS', 'CUSTOMDNS', 'CUSTOM_DNS'],
     customECHDomain: ['customECHDomain', 'CUSTOMECHDOMAIN', 'CUSTOM_ECH_DOMAIN'],
     alpn: ['alpn', 'ALPN'],
+    packetUp: ['packetUp', 'PACKET_UP', 'upPacket', 'UPLOAD_PACKET'],
+    packetDown: ['packetDown', 'PACKET_DOWN', 'downPacket', 'DOWNLOAD_PACKET'],
+    packetQueue: ['packetQueue', 'PACKET_QUEUE', 'uploadQueue', 'UPLOAD_QUEUE'],
+    packetTail: ['packetTail', 'PACKET_TAIL'],
+    packetDelay: ['packetDelay', 'PACKET_DELAY'],
+    connectRace: ['connectRace', 'CONNECT_RACE', 'race'],
+    firstByteTimeout: ['firstByteTimeout', 'FIRST_BYTE_TIMEOUT'],
     d: ['d', 'D'],
     p: ['p', 'P'],
     yx: ['yx', 'YX'],
@@ -343,14 +358,69 @@ let 是否代理已启用 = false;
 const 地址类型_四版 = 1;
 const 地址类型_网址 = 2;
 const 地址类型_六版 = 3;
-const 传输块大小 = 64 * 1024;
-const 传输下载包大小 = 32 * 1024;
-const 传输下载尾部 = 512;
-const 传输下载延迟 = 0;
-const 传输上传包大小 = 16 * 1024;
-const 传输上传队列上限 = 256 * 1024;
-const 传输连接竞速数 = 2;
-const 首字节超时 = 3500;
+const 默认传输参数 = Object.freeze({
+  readBuffer: 64 * 1024,
+  packetDown: 32 * 1024,
+  packetTail: 512,
+  packetDelay: 0,
+  packetUp: 32 * 1024,
+  packetQueue: 512 * 1024,
+  connectRace: 2,
+  firstByteTimeout: 3500
+});
+let 传输块大小 = 默认传输参数.readBuffer;
+let 传输下载包大小 = 默认传输参数.packetDown;
+let 传输下载尾部 = 默认传输参数.packetTail;
+let 传输下载延迟 = 默认传输参数.packetDelay;
+// 适当增大上行合并窗口，减少高带宽连接上的小包写入次数。
+let 传输上传包大小 = 默认传输参数.packetUp;
+let 传输上传队列上限 = 默认传输参数.packetQueue;
+let 传输连接竞速数 = 默认传输参数.connectRace;
+let 首字节超时 = 默认传输参数.firstByteTimeout;
+
+function 解析传输数值(值, 默认值, 最小值, 最大值, 步长 = 1) {
+  if (值 === undefined || 值 === null || 值 === '') return 默认值;
+  const 文本 = String(值).trim().toLowerCase();
+  const 匹配 = 文本.match(/^([0-9]+(?:\.[0-9]+)?)\s*(k|kb|m|mb)?$/);
+  if (!匹配) return 默认值;
+  const 单位 = 匹配[2];
+  const 倍数 = 单位 === 'k' || 单位 === 'kb' ? 1024 : 单位 === 'm' || 单位 === 'mb' ? 1024 * 1024 : 1;
+  const 原始值 = Number(匹配[1]) * 倍数;
+  if (!Number.isFinite(原始值)) return 默认值;
+  const 对齐值 = Math.round(原始值 / 步长) * 步长;
+  return Math.min(最大值, Math.max(最小值, 对齐值));
+}
+
+function 读取传输参数(配置, ...名称列表) {
+  for (const 名称 of 名称列表) {
+    if (配置?.[名称] !== undefined && 配置?.[名称] !== null && 配置?.[名称] !== '') return 配置[名称];
+  }
+  return undefined;
+}
+
+function 更新传输参数(配置 = {}) {
+  const 下行 = 解析传输数值(读取传输参数(配置, 'packetDown', 'PACKET_DOWN', 'downPacket', 'DOWNLOAD_PACKET'), 默认传输参数.packetDown, 8 * 1024, 128 * 1024, 1024);
+  const 上行 = 解析传输数值(读取传输参数(配置, 'packetUp', 'PACKET_UP', 'upPacket', 'UPLOAD_PACKET'), 默认传输参数.packetUp, 8 * 1024, 128 * 1024, 1024);
+  传输下载包大小 = 下行;
+  传输上传包大小 = 上行;
+  传输块大小 = 解析传输数值(读取传输参数(配置, 'readBuffer', 'READ_BUFFER'), Math.max(默认传输参数.readBuffer, 下行 * 2), 16 * 1024, 256 * 1024, 1024);
+  传输上传队列上限 = Math.max(上行 * 2, 解析传输数值(读取传输参数(配置, 'packetQueue', 'PACKET_QUEUE', 'uploadQueue', 'UPLOAD_QUEUE'), 默认传输参数.packetQueue, 64 * 1024, 2 * 1024 * 1024, 1024));
+  传输下载尾部 = Math.min(下行, 解析传输数值(读取传输参数(配置, 'packetTail', 'PACKET_TAIL'), 默认传输参数.packetTail, 128, 4096, 128));
+  传输下载延迟 = 解析传输数值(读取传输参数(配置, 'packetDelay', 'PACKET_DELAY'), 默认传输参数.packetDelay, 0, 20, 1);
+  传输连接竞速数 = 解析传输数值(读取传输参数(配置, 'connectRace', 'CONNECT_RACE', 'race'), 默认传输参数.connectRace, 1, 3, 1);
+  首字节超时 = 解析传输数值(读取传输参数(配置, 'firstByteTimeout', 'FIRST_BYTE_TIMEOUT'), 默认传输参数.firstByteTimeout, 1000, 10000, 100);
+}
+function 获取当前传输配置() {
+  return {
+    packetUp: String(传输上传包大小),
+    packetDown: String(传输下载包大小),
+    packetQueue: String(传输上传队列上限),
+    packetTail: String(传输下载尾部),
+    packetDelay: String(传输下载延迟),
+    connectRace: String(传输连接竞速数),
+    firstByteTimeout: String(首字节超时)
+  };
+}
 const 共享解码器 = new TextDecoder();
 const 唯一标识字节缓存 = new Map();
 
@@ -371,13 +441,94 @@ const 流量缓冲 = new Map();
 
 // 初始化 D1 与 seed 管理员账号（幂等）
 let 已初始化账号 = false;
+let 已初始化数据库绑定 = null;
+let 已初始化环境UUID = '';
+let 已初始化用户 = '';
+let 数据库架构已确认 = false;
+let 数据库架构初始化任务 = null;
+let 数据库初始化错误 = '';
+const 数据库架构SQL = `
+CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  uuid TEXT UNIQUE NOT NULL,
+  name TEXT DEFAULT '',
+  enabled INTEGER DEFAULT 1,
+  upload INTEGER DEFAULT 0,
+  download INTEGER DEFAULT 0,
+  trojan_hash TEXT,
+  xhttp_bytes BLOB,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_keys_trojan_hash ON keys(trojan_hash);
+CREATE INDEX IF NOT EXISTS idx_keys_xhttp_bytes ON keys(xhttp_bytes);
+CREATE INDEX IF NOT EXISTS idx_keys_account ON keys(account_id);
+CREATE INDEX IF NOT EXISTS idx_keys_uuid ON keys(uuid);
+CREATE TABLE IF NOT EXISTS key_countries (
+  key_id INTEGER NOT NULL REFERENCES keys(id) ON DELETE CASCADE,
+  country TEXT NOT NULL,
+  hit_count INTEGER DEFAULT 0,
+  bytes INTEGER DEFAULT 0,
+  PRIMARY KEY (key_id, country)
+);
+`;
+
+function 获取安全错误信息(错误) {
+  return String(错误?.message || 错误 || '未知错误').replace(/[\r\n]+/g, ' ').slice(0, 240);
+}
+
+async function 确保数据库架构() {
+  if (!数据库) {
+    数据库初始化错误 = 'D1 数据库未绑定（绑定名必须为 DB）';
+    return false;
+  }
+  if (数据库架构已确认) return true;
+  if (!数据库架构初始化任务) {
+    数据库架构初始化任务 = (async () => {
+      try {
+        await 数据库.exec(数据库架构SQL);
+        数据库架构已确认 = true;
+        数据库初始化错误 = '';
+        return true;
+      } catch (错误) {
+        数据库初始化错误 = `D1 自动建表失败：${获取安全错误信息(错误)}`;
+        return false;
+      } finally {
+        数据库架构初始化任务 = null;
+      }
+    })();
+  }
+  return 数据库架构初始化任务;
+}
+
 async function 初始化数据库(本地值) {
-  if (本地值.DB) 数据库 = 本地值.DB;
-  if (本地值.SESSION_SECRET) 会话密钥 = String(本地值.SESSION_SECRET);
-  if (本地值.ADMIN_USER) 初始管理员用户 = String(本地值.ADMIN_USER);
-  if (本地值.ADMIN_PASS) 初始管理员密码 = String(本地值.ADMIN_PASS);
-  if (!数据库 || 已初始化账号 || !初始管理员用户 || !初始管理员密码) return;
-  已初始化账号 = true;
+  数据库 = 本地值.DB || null;
+  会话密钥 = 本地值.SESSION_SECRET ? String(本地值.SESSION_SECRET) : '';
+  初始管理员用户 = 本地值.ADMIN_USER ? String(本地值.ADMIN_USER).trim() : '';
+  初始管理员密码 = 本地值.ADMIN_PASS ? String(本地值.ADMIN_PASS) : '';
+  const 环境UUID = String(本地值.u || 本地值.U || '').trim().toLowerCase();
+  if (环境UUID && 是否有效格式(环境UUID)) 认证令牌 = 环境UUID;
+  if (!数据库) {
+    数据库初始化错误 = 'D1 数据库未绑定（绑定名必须为 DB）';
+    return false;
+  }
+  if (!await 确保数据库架构()) return false;
+  if (!初始管理员用户 || !初始管理员密码) {
+    数据库初始化错误 = 'ADMIN_USER 或 ADMIN_PASS 未配置';
+    return false;
+  }
+  if (已初始化账号 && 已初始化数据库绑定 === 数据库 && 已初始化环境UUID === 环境UUID && 已初始化用户 === 初始管理员用户) {
+    return true;
+  }
+  // 幂等初始化；失败不会设置完成标记，后续请求可自动重试。
   try {
     const 存在 = await 数据库.prepare('SELECT id FROM accounts WHERE username=?').bind(初始管理员用户).first();
     if (!存在) {
@@ -385,7 +536,25 @@ async function 初始化数据库(本地值) {
       const 哈希 = await 计算密码哈希(盐, 初始管理员密码);
       await 数据库.prepare('INSERT INTO accounts (username, password_hash, salt) VALUES (?,?,?)').bind(初始管理员用户, 哈希, 盐).run();
     }
-  } catch (忽略值) {}
+    // 将旧版环境变量 UUID 纳入 key 表，使默认 UUID 也能统计流量。
+    if (环境UUID) {
+      const 账号 = 存在 || await 数据库.prepare('SELECT id FROM accounts WHERE username=?').bind(初始管理员用户).first();
+      if (账号?.id) {
+        const trojan哈希 = await 计算trojan哈希(环境UUID);
+        const xhttp字节 = 计算xhttp字节(环境UUID);
+        await 数据库.prepare('INSERT OR IGNORE INTO keys (account_id, uuid, name, trojan_hash, xhttp_bytes) VALUES (?,?,?,?,?)').bind(账号.id, 环境UUID, '默认 UUID', trojan哈希, xhttp字节).run();
+      }
+    }
+    已初始化账号 = true;
+    已初始化数据库绑定 = 数据库;
+    已初始化环境UUID = 环境UUID;
+    已初始化用户 = 初始管理员用户;
+    数据库初始化错误 = '';
+    return true;
+  } catch (错误) {
+    数据库初始化错误 = `管理员账号初始化失败：${获取安全错误信息(错误)}`;
+    return false;
+  }
 }
 
 // 随机字节 -> hex
@@ -460,8 +629,9 @@ function 清除会话cookie头() {
 async function 查key( uuid) {
   if (!是否有效格式(uuid)) return null;
   uuid = uuid.toLowerCase();
-  // 全局认证令牌始终视为合法 key（id=0，回退模式）
-  if (uuid === 认证令牌) return { id: 0, uuid, enabled: true, name: '默认' };
+  const 兼容默认key = { id: 0, uuid, enabled: true, name: '默认' };
+  // 没有 D1 时保留旧版全局 UUID 兼容行为；有 D1 则优先使用可启停的 key 记录。
+  if (uuid === 认证令牌 && !数据库) return 兼容默认key;
   const 缓存时间 = key缓存时间戳.get(uuid);
   if (缓存时间 && Date.now() - 缓存时间 < key缓存期限 && key缓存.has(uuid)) {
     return key缓存.get(uuid);
@@ -476,6 +646,7 @@ async function 查key( uuid) {
       return 结果;
     }
   } catch (忽略值) {}
+  if (uuid === 认证令牌) return 兼容默认key;
   return null;
 }
 // key 是否有效且启用
@@ -491,6 +662,26 @@ async function 查keyByVless字节(字节, 偏移 = 0) {
 // 按 Trojan 的 SHA-224 hash 查 key
 const trojan哈希缓存 = new Map();
 const trojan哈希时间 = new Map();
+function 清理key缓存(值 = {}) {
+  const uuid = String(值.uuid || '').toLowerCase();
+  const trojanHash = String(值.trojan_hash || 值.trojanHash || '').toLowerCase();
+  if (uuid) {
+    key缓存.delete(uuid);
+    key缓存时间戳.delete(uuid);
+  }
+  if (trojanHash) {
+    trojan哈希缓存.delete(trojanHash);
+    trojan哈希时间.delete(trojanHash);
+  }
+  if (uuid) {
+    for (const [hash, 行] of trojan哈希缓存) {
+      if (String(行?.uuid || '').toLowerCase() === uuid) {
+        trojan哈希缓存.delete(hash);
+        trojan哈希时间.delete(hash);
+      }
+    }
+  }
+}
 async function 查keyByTrojan哈希( hashHex) {
   if (hashHex === 认证令牌) return { id: 0, uuid: 认证令牌, enabled: true, name: '默认' };
   const t = trojan哈希时间.get(hashHex);
@@ -544,15 +735,70 @@ async function 记录流量(keyId, 上行, 下行, 国家) {
 }
 
 async function 验证管理员账号(用户名, 密码) {
-  if (!数据库 || !用户名 || !密码) return null;
+  if (!数据库) return { 账号id: null, 错误: 'D1 数据库未绑定（绑定名必须为 DB）' };
+  if (!用户名 || !密码) return { 账号id: null, 错误: '' };
   try {
     const 账号 = await 数据库.prepare('SELECT id, password_hash, salt FROM accounts WHERE username=?').bind(String(用户名).trim()).first();
-    if (!账号) return null;
+    if (!账号) return { 账号id: null, 错误: '' };
     const 哈希 = await 计算密码哈希(账号.salt, String(密码));
-    return 哈希 === 账号.password_hash ? 账号.id : null;
-  } catch (忽略值) {
-    return null;
+    return { 账号id: 哈希 === 账号.password_hash ? 账号.id : null, 错误: '' };
+  } catch (错误) {
+    return { 账号id: null, 错误: `D1 查询管理员账号失败：${获取安全错误信息(错误)}` };
   }
+}
+
+function 获取登录配置错误() {
+  if (!数据库) return 'D1 数据库未绑定（绑定名必须为 DB）';
+  if (!会话密钥) return 'SESSION_SECRET 未配置';
+  if (!初始管理员用户 || !初始管理员密码) return 'ADMIN_USER 或 ADMIN_PASS 未配置';
+  return 数据库初始化错误;
+}
+
+async function 读取安装检查() {
+  const 表 = { accounts: false, keys: false, keyCountries: false };
+  let 管理员账号已创建 = false;
+  let 查询错误 = '';
+  if (数据库) {
+    try {
+      const 结果 = await 数据库.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('accounts','keys','key_countries')").all();
+      const 名称 = new Set((结果.results || []).map(行 => 行.name));
+      表.accounts = 名称.has('accounts');
+      表.keys = 名称.has('keys');
+      表.keyCountries = 名称.has('key_countries');
+      if (表.accounts && 初始管理员用户) {
+        const 账号 = await 数据库.prepare('SELECT id FROM accounts WHERE username=?').bind(初始管理员用户).first();
+        管理员账号已创建 = !!账号;
+      }
+    } catch (错误) {
+      查询错误 = `D1 检查失败：${获取安全错误信息(错误)}`;
+    }
+  }
+  const 表完整 = 表.accounts && 表.keys && 表.keyCountries;
+  const 错误 = 数据库初始化错误 || 查询错误;
+  const 就绪 = !!数据库 && !!会话密钥 && !!初始管理员用户 && !!初始管理员密码 && 表完整 && 管理员账号已创建 && !错误;
+  let 下一步 = '登录配置已就绪。';
+  if (!数据库) 下一步 = '在 Worker 的 D1 绑定中将变量名设为 DB。';
+  else if (!初始管理员用户 || !初始管理员密码) 下一步 = '设置 ADMIN_USER 和 ADMIN_PASS 环境变量后重新部署。';
+  else if (!会话密钥) 下一步 = '设置 SESSION_SECRET 环境变量后重新部署。';
+  else if (错误) 下一步 = '检查 D1 绑定权限和错误信息，然后重新访问此地址。';
+  else if (!表完整 || !管理员账号已创建) 下一步 = '重新访问 /admin 以触发自动初始化。';
+  return {
+    ready: 就绪,
+    checks: {
+      d1Binding: !!数据库,
+      sessionSecret: !!会话密钥,
+      adminUser: !!初始管理员用户,
+      adminPassword: !!初始管理员密码,
+      tables: 表,
+      adminAccount: 管理员账号已创建
+    },
+    error: 错误 || null,
+    nextStep: 下一步
+  };
+}
+
+async function 处理安装检查请求() {
+  return JSON响应(await 读取安装检查());
 }
 
 function JSON响应(数据, 状态 = 200, 额外头 = {}) {
@@ -866,19 +1112,18 @@ export default {
       认证令牌 = (本地值734.u || 本地值734.U || 认证令牌).toLowerCase();
       const 值路径 = (本地值734.d || 本地值734.D || 认证令牌).toLowerCase();
       const 本地值726 = 获取配置值('p', 本地值734.p || 本地值734.P);
-      let 值自定义地址 = false;
       const 手动地区725 = 获取配置值('wk', 本地值734.wk || 本地值734.WK);
       if (手动地区725 && 手动地区725.trim()) {
         手动工作器地区 = 手动地区725.trim().toUpperCase();
         当前工作器地区 = 手动工作器地区;
       } else if (本地值726 && 本地值726.trim()) {
-        值自定义地址 = true;
         当前工作器地区 = 'CUSTOM';
       } else {
-        当前工作器地区 = await 检测工作器地区(请求735);
+        // 不再为订阅/握手执行地区检测；地区只保留给兼容诊断接口。
+        当前工作器地区 = '';
       }
-      const 地区匹配控制724 = 获取配置文本值('rm', 配置默认值.rm, 本地值734.rm || 本地值734.RM);
-      启用地区匹配 = !(地区匹配控制724 && 地区匹配控制724.toLowerCase() === 'no');
+      // 保留 rm 兼容读取，但不再按地区筛选或调整节点顺序。
+      启用地区匹配 = false;
       const 值回退723 = 获取配置文本值('p', 配置默认值.p, 本地值734.p || 本地值734.P);
       回退地址 = 值回退723 ? 值回退723.trim() : '';
       代理5配置 = 获取配置文本值('s', 配置默认值.s, 本地值734.s || 本地值734.S);
@@ -956,6 +1201,7 @@ export default {
       自定义域名系统 = 获取配置文本值('customDNS', 配置默认值.customDNS).trim() || 配置默认值.customDNS;
       自定义加密客户端问候域名 = 获取配置文本值('customECHDomain', 配置默认值.customECHDomain).trim() || 配置默认值.customECHDomain;
       自定义应用层协议协商 = 规范化应用层协议协商(获取配置文本值('alpn', 配置默认值.alpn, 本地值734.alpn || 本地值734.ALPN));
+      更新传输参数(获取有效配置快照(本地值734));
 
       // 如果启用了ECH，自动启用仅TLS模式（避免80端口干扰）
       // ECH需要TLS才能工作，所以必须禁用非TLS节点
@@ -979,6 +1225,10 @@ export default {
         if (账号id) return await 返回管理页面(账号id);
         if (请求735.method === 'POST') return await 处理登录请求(请求735);
         return 返回登录页面();
+      }
+      if (网址698.pathname === '/admin/setup-check') {
+        if (请求735.method !== 'GET') return JSON响应({ error: 'Method not allowed' }, 405);
+        return await 处理安装检查请求();
       }
       if (网址698.pathname === '/logout' && 请求735.method === 'POST') {
         return JSON响应({ success: true }, 200, { 'Set-Cookie': 清除会话cookie头() });
@@ -1087,7 +1337,7 @@ export default {
         });
       }
       if (请求735.headers.get('Upgrade') === atob('d2Vic29ja2V0')) {
-        return await 处理网页套接字请求(请求735);
+        return await 处理网页套接字请求(请求735, 本地值733);
       }
       if (请求735.method === 'GET') {
         // 处理 /{UUID}/region 或 /{自定义路径}/region
@@ -1245,9 +1495,12 @@ export default {
           if (网址698.pathname.length > 1 && 网址698.pathname !== '/') {
             const 用户658 = 网址698.pathname.replace(/\/$/, '').replace('/sub', '').substring(1);
             if (是否有效格式(用户658)) {
+              // 自定义路径仍保留兼容入口；D1 中启用的 key 可直接使用自己的 UUID。
+              if (await key有效(用户658)) {
+                return await 处理订阅请求(请求735, 用户658, 网址698);
+              }
               return new Response(JSON.stringify({
-                error: '访问被拒绝',
-                message: '当前 Worker 已启用自定义路径模式，UUID 访问已禁用'
+                error: 'UUID错误'
               }), {
                 status: 403,
                 headers: {
@@ -1577,23 +1830,53 @@ function 生成值值589(链接列表588, 本地值587 = {}) {
   const 值值580 = ['proxies:'];
   for (const 数量值579 of 节点列表586) 值值580.push(构建值节点行(数量值579));
   const 节点仅 = 名称列表584.length ? 名称列表584.map(数量值578 => `      - ${处理本地值622(数量值578)}`).join('\n') : '      - DIRECT';
-  const 值值577 = [解码64('cHJveHktZ3JvdXBzOg=='), '  - name: "🚀 节点选择"', '    type: select', '    proxies:', '      - "🎯 全球直连"', 节点仅, '  - name: "🌍 国外媒体"', '    type: select', '    proxies:', 处理值选择值(名称列表584), '  - name: "📺 哔哩哔哩"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+  // 客户端按目标站点实时探测，节点不会因 Worker 地区被隐藏；未通过的节点仍保留在「节点选择」。
+  const 站点测速定义 = [{
+    name: '✅ GPT 可用',
+    url: 'https://chatgpt.com/robots.txt'
+  }, {
+    name: '✅ Google 可用',
+    url: 'https://www.google.com/generate_204'
+  }, {
+    name: '✅ X/Twitter 可用',
+    url: 'https://x.com/robots.txt'
+  }, {
+    name: '✅ xAI 可用',
+    url: 'https://x.ai/robots.txt'
+  }];
+  const 站点组名称 = 名称列表584.length ? 站点测速定义.map(定义 => 定义.name) : [];
+  const 站点测速组 = 名称列表584.length ? 站点测速定义.flatMap(定义 => ['  - name: "' + 定义.name + '"', '    type: url-test', '    url: "' + 定义.url + '"', '    interval: 300', '    tolerance: 50', '    proxies:', 节点仅]) : [];
+  const 全部节点引用 = 名称列表584.length ? [...(名称列表584.length > 1 ? ['      - "⚡ 自动测速"'] : []), ...站点组名称.map(名称 => `      - ${处理本地值622(名称)}`), 节点仅] : [节点仅];
+  const 站点组引用 = 站点组名称.length ? 站点组名称 : 名称列表584;
+  const 值值577 = [解码64('cHJveHktZ3JvdXBzOg=='), ...站点测速组, '  - name: "🚀 节点选择"', '    type: select', '    proxies:', '      - "🎯 全球直连"', ...全部节点引用, '  - name: "🌍 国外媒体"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: 站点组引用
+  }), '  - name: "📺 哔哩哔哩"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     directFirst: true
   }), '  - name: "📹 油管视频"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     extraGroups: ['🌍 国外媒体']
   }), '  - name: "🎬 奈飞视频"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     extraGroups: ['🌍 国外媒体']
-  }), '  - name: "📲 电报信息"', '    type: select', '    proxies:', 处理值选择值(名称列表584), '  - name: "🌐 谷歌服务"', '    type: select', '    proxies:', 处理值选择值(名称列表584), '  - name: "🤖 OpenAI"', '    type: select', '    proxies:', 处理值选择值(名称列表584), '  - name: "Ⓜ️ 微软服务"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+  }), '  - name: "📲 电报信息"', '    type: select', '    proxies:', 处理值选择值(名称列表584), '  - name: "🌐 谷歌服务"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: ['✅ Google 可用']
+  }), '  - name: "🤖 OpenAI"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: ['✅ GPT 可用']
+  }), '  - name: "🛰️ X / Twitter"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: ['✅ X/Twitter 可用']
+  }), '  - name: "🧠 xAI"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: ['✅ xAI 可用']
+  }), '  - name: "Ⓜ️ 微软服务"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     directFirst: true
   }), '  - name: "🍎 苹果服务"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
     directFirst: true
-  }), '  - name: "🎯 全球直连"', '    type: select', '    proxies:', '      - DIRECT', '  - name: "🛑 全球拦截"', '    type: select', '    proxies:', '      - REJECT', '      - DIRECT', '  - name: "🍃 应用净化"', '    type: select', '    proxies:', '      - REJECT', '      - DIRECT', '  - name: "🐟 漏网之鱼"', '    type: select', '    proxies:', 处理值选择值(名称列表584), ''];
+  }), '  - name: "🎯 全球直连"', '    type: select', '    proxies:', '      - DIRECT', '  - name: "🛑 全球拦截"', '    type: select', '    proxies:', '      - REJECT', '      - DIRECT', '  - name: "🍃 应用净化"', '    type: select', '    proxies:', '      - REJECT', '      - DIRECT', '  - name: "🐟 漏网之鱼"', '    type: select', '    proxies:', 处理值选择值(名称列表584, {
+    extraGroups: 站点组引用
+  }), ''];
 
   // 规则源 - CDN: jsDelivr
   const 值基础576 = 解码64('aHR0cHM6Ly9mYXN0bHkuanNkZWxpdnIubmV0L2doL0xveWFsc29sZGllci9jbGFzaC1ydWxlc0ByZWxlYXNl');
   const 提供器 = (名称575, 本地值574) => [`  ${名称575}:`, `    type: http`, `    behavior: ${本地值574}`, `    url: "${值基础576}/${名称575}.txt"`, `    path: ./rulesets/loyalsoldier/${名称575}.txt`, `    interval: 86400`].join('\n');
   const 规则值 = ['rule-providers:', 提供器('reject', 'domain'), 提供器('icloud', 'domain'), 提供器('apple', 'domain'), 提供器('google', 'domain'), 提供器(解码64('cHJveHk='), 'domain'), 提供器('direct', 'domain'), 提供器('private', 'domain'), 提供器('gfw', 'domain'), 提供器('greatfire', 'domain'), 提供器('tld-not-cn', 'domain'), 提供器('telegramcidr', 'ipcidr'), 提供器('cncidr', 'ipcidr'), 提供器('lancidr', 'ipcidr'), 提供器('applications', 'classical'), ''];
-  const 规则列表 = ['rules:', '  - DOMAIN-SUFFIX,acl4.ssr,🎯 全球直连', '  - DOMAIN-SUFFIX,local,🎯 全球直连', 解码64('ICAtIERPTUFJTixjbGFzaC5yYXpvcmQudG9wLPCfjq8g5YWo55CD55u06L+e'), '  - DOMAIN,yacd.haishan.me,🎯 全球直连', '  - DOMAIN,yacd.metacubex.one,🎯 全球直连', '  - DOMAIN,d.metacubex.one,🎯 全球直连', '  - DOMAIN-SUFFIX,googleapis.cn,🌐 谷歌服务', '  - DOMAIN-SUFFIX,gstatic.com,🌐 谷歌服务', '  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,🌐 谷歌服务', '  - DOMAIN-SUFFIX,googlevideo.com,📹 油管视频', '  - DOMAIN-SUFFIX,googleusercontent.com,🌐 谷歌服务', '  - DOMAIN-KEYWORD,youtube,📹 油管视频', '  - DOMAIN-SUFFIX,youtube.com,📹 油管视频', '  - DOMAIN-SUFFIX,youtu.be,📹 油管视频', '  - DOMAIN-KEYWORD,netflix,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxext.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxso.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxvideo.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflximg.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflximg.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,netflix.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,netflix.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,bilibili.com,📺 哔哩哔哩', '  - DOMAIN-SUFFIX,bilivideo.com,📺 哔哩哔哩', '  - DOMAIN-SUFFIX,hdslb.com,📺 哔哩哔哩', '  - DOMAIN-KEYWORD,openai,🤖 OpenAI', '  - DOMAIN-KEYWORD,chatgpt,🤖 OpenAI', '  - DOMAIN-SUFFIX,openai.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,chatgpt.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,oaistatic.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,oaiusercontent.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,anthropic.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,claude.ai,🤖 OpenAI', '  - DOMAIN-SUFFIX,perplexity.ai,🤖 OpenAI', '  - DOMAIN-SUFFIX,gemini.google.com,🤖 OpenAI', '  - RULE-SET,applications,🎯 全球直连', '  - RULE-SET,private,🎯 全球直连', '  - RULE-SET,reject,🛑 全球拦截', '  - RULE-SET,icloud,🍎 苹果服务', '  - RULE-SET,apple,🍎 苹果服务', '  - RULE-SET,google,🌐 谷歌服务', 解码64('ICAtIFJVTEUtU0VULHByb3h5LPCfmoAg6IqC54K56YCJ5oup'), '  - RULE-SET,gfw,🚀 节点选择', '  - RULE-SET,greatfire,🚀 节点选择', '  - RULE-SET,tld-not-cn,🚀 节点选择', '  - RULE-SET,direct,🎯 全球直连', '  - RULE-SET,lancidr,🎯 全球直连,no-resolve', '  - RULE-SET,cncidr,🎯 全球直连,no-resolve', '  - RULE-SET,telegramcidr,📲 电报信息,no-resolve', '  - GEOIP,LAN,🎯 全球直连,no-resolve', '  - GEOIP,CN,🎯 全球直连,no-resolve', '  - MATCH,🐟 漏网之鱼'];
+  const 规则列表 = ['rules:', '  - DOMAIN-SUFFIX,acl4.ssr,🎯 全球直连', '  - DOMAIN-SUFFIX,local,🎯 全球直连', 解码64('ICAtIERPTUFJTixjbGFzaC5yYXpvcmQudG9wLPCfjq8g5YWo55CD55u06L+e'), '  - DOMAIN,yacd.haishan.me,🎯 全球直连', '  - DOMAIN,yacd.metacubex.one,🎯 全球直连', '  - DOMAIN,d.metacubex.one,🎯 全球直连', '  - DOMAIN-SUFFIX,googleapis.cn,🌐 谷歌服务', '  - DOMAIN-SUFFIX,gstatic.com,🌐 谷歌服务', '  - DOMAIN-SUFFIX,xn--ngstr-lra8j.com,🌐 谷歌服务', '  - DOMAIN-SUFFIX,googlevideo.com,📹 油管视频', '  - DOMAIN-SUFFIX,googleusercontent.com,🌐 谷歌服务', '  - DOMAIN-KEYWORD,youtube,📹 油管视频', '  - DOMAIN-SUFFIX,youtube.com,📹 油管视频', '  - DOMAIN-SUFFIX,youtu.be,📹 油管视频', '  - DOMAIN-KEYWORD,netflix,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxext.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxso.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflxvideo.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflximg.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,nflximg.net,🎬 奈飞视频', '  - DOMAIN-SUFFIX,netflix.com,🎬 奈飞视频', '  - DOMAIN-SUFFIX,bilibili.com,📺 哔哩哔哩', '  - DOMAIN-SUFFIX,bilivideo.com,📺 哔哩哔哩', '  - DOMAIN-SUFFIX,hdslb.com,📺 哔哩哔哩', '  - DOMAIN-KEYWORD,openai,🤖 OpenAI', '  - DOMAIN-KEYWORD,chatgpt,🤖 OpenAI', '  - DOMAIN-SUFFIX,openai.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,chatgpt.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,oaistatic.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,oaiusercontent.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,anthropic.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,claude.ai,🤖 OpenAI', '  - DOMAIN-SUFFIX,perplexity.ai,🤖 OpenAI', '  - DOMAIN-SUFFIX,gemini.google.com,🤖 OpenAI', '  - DOMAIN-SUFFIX,x.ai,🧠 xAI', '  - DOMAIN-SUFFIX,grok.com,🧠 xAI', '  - DOMAIN-SUFFIX,x.com,🛰️ X / Twitter', '  - DOMAIN-SUFFIX,twitter.com,🛰️ X / Twitter', '  - RULE-SET,applications,🎯 全球直连', '  - RULE-SET,private,🎯 全球直连', '  - RULE-SET,reject,🛑 全球拦截', '  - RULE-SET,icloud,🍎 苹果服务', '  - RULE-SET,apple,🍎 苹果服务', '  - RULE-SET,google,🌐 谷歌服务', 解码64('ICAtIFJVTEUtU0VULHByb3h5LPCfmoAg6IqC54K56YCJ5oup'), '  - RULE-SET,gfw,🚀 节点选择', '  - RULE-SET,greatfire,🚀 节点选择', '  - RULE-SET,tld-not-cn,🚀 节点选择', '  - RULE-SET,direct,🎯 全球直连', '  - RULE-SET,lancidr,🎯 全球直连,no-resolve', '  - RULE-SET,cncidr,🎯 全球直连,no-resolve', '  - RULE-SET,telegramcidr,📲 电报信息,no-resolve', '  - GEOIP,LAN,🎯 全球直连,no-resolve', '  - GEOIP,CN,🎯 全球直连,no-resolve', '  - MATCH,🐟 漏网之鱼'];
   return [头部581.join('\n'), 值值580.join('\n'), '', 值值577.join('\n'), 规则值.join('\n'), 规则列表.join('\n'), ''].join('\n');
 }
 
@@ -1670,6 +1953,45 @@ function 生成值值数据对象(链接列表573) {
     url: `${值基础地址}/${本地值564}.srs`,
     download_detour: 'direct'
   });
+  // Sing-box 在客户端侧按站点分别探测；节点不会因 Worker 地区被隐藏。
+  const 站点测速定义 = [{
+    tag: '✅ GPT 可用',
+    url: 'https://chatgpt.com/robots.txt'
+  }, {
+    tag: '✅ Google 可用',
+    url: 'https://www.google.com/generate_204'
+  }, {
+    tag: '✅ X/Twitter 可用',
+    url: 'https://x.com/robots.txt'
+  }, {
+    tag: '✅ xAI 可用',
+    url: 'https://x.ai/robots.txt'
+  }];
+  const 自动测速出口 = 出站值.length > 1 ? {
+    type: 'urltest',
+    tag: '⚡ 自动测速',
+    outbounds: 出站值,
+    url: 'https://www.gstatic.com/generate_204',
+    interval: '5m',
+    tolerance: 50
+  } : null;
+  const 站点测速出口 = 出站值.length ? 站点测速定义.map(定义 => ({
+    type: 'urltest',
+    tag: 定义.tag,
+    outbounds: 出站值,
+    url: 定义.url,
+    interval: '5m',
+    tolerance: 50
+  })) : [];
+  const 自动测速引用 = 自动测速出口 ? ['⚡ 自动测速'] : [];
+  const 站点测速引用 = 站点测速出口.map(出口 => 出口.tag);
+  const 站点选择引用 = 标签 => 站点测速引用.includes(标签) ? [标签] : [];
+  const 选择出口列表 = [
+    ...自动测速引用,
+    ...站点测速引用,
+    'direct',
+    ...出站值
+  ];
   const 配置 = {
     log: {
       level: 'info',
@@ -1734,12 +2056,12 @@ function 生成值值数据对象(链接列表573) {
     outbounds: [{
       type: 'selector',
       tag: 'select',
-      outbounds: ['direct', ...出站值],
-      default: 出站值[0] || 'direct'
-    }, {
+      outbounds: 选择出口列表,
+      default: 自动测速出口 ? '⚡ 自动测速' : (出站值[0] || 'direct')
+    }, ...(自动测速出口 ? [自动测速出口] : []), ...站点测速出口, {
       type: 'selector',
       tag: '🌍 国外媒体',
-      outbounds: ['select', 'direct', ...出站值]
+      outbounds: ['select', ...自动测速引用, 'direct', ...出站值]
     }, {
       type: 'selector',
       tag: '📲 电报信息',
@@ -1747,11 +2069,19 @@ function 生成值值数据对象(链接列表573) {
     }, {
       type: 'selector',
       tag: '🌐 谷歌服务',
-      outbounds: ['select', 'direct', ...出站值]
+      outbounds: [...站点选择引用('✅ Google 可用'), 'select', 'direct', ...出站值]
     }, {
       type: 'selector',
       tag: '🤖 OpenAI',
-      outbounds: ['select', 'direct', ...出站值]
+      outbounds: [...站点选择引用('✅ GPT 可用'), 'select', 'direct', ...出站值]
+    }, {
+      type: 'selector',
+      tag: '🛰️ X / Twitter',
+      outbounds: [...站点选择引用('✅ X/Twitter 可用'), 'select', 'direct', ...出站值]
+    }, {
+      type: 'selector',
+      tag: '🧠 xAI',
+      outbounds: [...站点选择引用('✅ xAI 可用'), 'select', 'direct', ...出站值]
     }, {
       type: 'selector',
       tag: 'Ⓜ️ 微软服务',
@@ -1798,6 +2128,15 @@ function 生成值值数据对象(链接列表573) {
       }, {
         ip_is_private: true,
         outbound: 'direct'
+      }, {
+        domain_suffix: ['x.com', 'twitter.com'],
+        outbound: '🛰️ X / Twitter'
+      }, {
+        domain_suffix: ['x.ai', 'grok.com'],
+        outbound: '🧠 xAI'
+      }, {
+        domain_suffix: ['chatgpt.com', 'openai.com'],
+        outbound: '🤖 OpenAI'
       }, {
         rule_set: 'geosite-category-ads-all',
         outbound: 'block'
@@ -2299,40 +2638,28 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
       最终链接列表.push(...生成扩展超文本链接列表来源源(列表498, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
     }
   }
+  let 已添加备用节点 = false;
+  async function 添加全部备用节点() {
+    if (已添加备用节点) return;
+    const 备用列表 = 备用地址列表.map(地址 => ({
+      ip: 地址.domain,
+      port: 地址.port || 443,
+      isp: `ProxyIP-${地址.regionCode || 地址.region || '备用'}`
+    }));
+    if (!备用列表.length) return;
+    已添加备用节点 = true;
+    回退地址 = `${备用列表[0].ip}:${备用列表[0].port}`;
+    await 添加节点列表来源列表(备用列表);
+  }
   if (启用原生地址) {
-    if (当前工作器地区 === 'CUSTOM') {
-      const 原生列表497 = [{
+    try {
+      const 原生列表 = [{
         ip: 工作器域名504,
         isp: '原生地址'
       }];
-      await 添加节点列表来源列表(原生列表497);
-    } else {
-      try {
-        const 原生列表496 = [{
-          ip: 工作器域名504,
-          isp: '原生地址'
-        }];
-        await 添加节点列表来源列表(原生列表496);
-      } catch (错误495) {
-        if (!当前工作器地区) {
-          当前工作器地区 = await 检测工作器地区(请求507);
-        }
-        const 值备用地址494 = await 获取值备用地址(当前工作器地区);
-        if (值备用地址494) {
-          回退地址 = 值备用地址494.domain + ':' + 值备用地址494.port;
-          const 备用列表493 = [{
-            ip: 值备用地址494.domain,
-            isp: 解码64('UHJveHlJUC0=') + 当前工作器地区
-          }];
-          await 添加节点列表来源列表(备用列表493);
-        } else {
-          const 原生列表 = [{
-            ip: 工作器域名504,
-            isp: '原生地址'
-          }];
-          await 添加节点列表来源列表(原生列表);
-        }
-      }
+      await 添加节点列表来源列表(原生列表);
+    } catch (错误495) {
+      await 添加全部备用节点();
     }
   }
   const 是否有自定义优选 = 自定义优选地址列表.length > 0 || 自定义优选域名列表.length > 0;
@@ -2361,20 +2688,11 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
           const 值地址列表490 = await 获取值地址列表();
           if (值地址列表490.length > 0) {
             await 添加节点列表来源列表(值地址列表490);
+          } else {
+            await 添加全部备用节点();
           }
         } catch (错误489) {
-          if (!当前工作器地区) {
-            当前工作器地区 = await 检测工作器地区(请求507);
-          }
-          const 值备用地址488 = await 获取值备用地址(当前工作器地区);
-          if (值备用地址488) {
-            回退地址 = 值备用地址488.domain + ':' + 值备用地址488.port;
-            const 备用列表487 = [{
-              ip: 值备用地址488.domain,
-              isp: 解码64('UHJveHlJUC0=') + 当前工作器地区
-            }];
-            await 添加节点列表来源列表(备用列表487);
-          }
+          await 添加全部备用节点();
         }
       }
     }
@@ -2391,20 +2709,11 @@ async function 处理订阅请求(请求507, 用户506, 网址505 = null) {
           if (启用扩展传输) {
             最终链接列表.push(...生成扩展超文本链接列表来源源(新地址列表, 用户506, 工作器域名504, 加密客户端问候配置501, false, 别名命名器502));
           }
+        } else {
+          await 添加全部备用节点();
         }
       } catch (错误486) {
-        if (!当前工作器地区) {
-          当前工作器地区 = await 检测工作器地区(请求507);
-        }
-        const 值备用地址485 = await 获取值备用地址(当前工作器地区);
-        if (值备用地址485) {
-          回退地址 = 值备用地址485.domain + ':' + 值备用地址485.port;
-          const 备用列表 = [{
-            ip: 值备用地址485.domain,
-            isp: 解码64('UHJveHlJUC0=') + 当前工作器地区
-          }];
-          await 添加节点列表来源列表(备用列表);
-        }
+        await 添加全部备用节点();
       }
     }
   }
@@ -2715,7 +3024,7 @@ async function 获取值解析值(网址426) {
     return [];
   }
 }
-async function 处理网页套接字请求(请求417) {
+async function 处理网页套接字请求(请求417, 执行上下文 = null) {
   // 从请求URL的path query中读取客户端自定义参数
   // 从 path query 读取覆盖参数
   const 请求网址 = new URL(请求417.url);
@@ -2736,16 +3045,13 @@ async function 处理网页套接字请求(请求417) {
   const 当前请求国家 = 请求417.headers.get('CF-IPCountry') || '';
   const 流量统计 = { 上行: 0, 下行: 0 };
 
-  // 检测并设置当前Worker地区，确保WebSocket请求能正确进行就近匹配
-  // 优先级：客户端path参数wk > 全局manualWorkerRegion > 自动检测
+  // 地区参数仅保留兼容读取，不参与节点筛选、排序或连接回退。
   let 实际地区411 = 当前工作器地区;
   if (!实际地区411 || 实际地区411 === '') {
     if (请求地区415) {
       实际地区411 = 请求地区415;
     } else if (手动工作器地区 && 手动工作器地区.trim()) {
       实际地区411 = 手动工作器地区.trim().toUpperCase();
-    } else {
-      实际地区411 = await 检测工作器地区(请求417);
     }
   } else if (请求地区415) {
     实际地区411 = 请求地区415;
@@ -2775,7 +3081,11 @@ async function 处理网页套接字请求(请求417) {
     if (传输值) return;
     传输值 = true;
     // 连接结束，flush 流量与国家到 D1
-    if (当前握手keyId && 数据库) 记录流量(当前握手keyId, 流量统计.上行, 流量统计.下行, 当前请求国家);
+    if (当前握手keyId && 数据库) {
+      const 记录任务 = 记录流量(当前握手keyId, 流量统计.上行, 流量统计.下行, 当前请求国家);
+      if (执行上下文?.waitUntil) 执行上下文.waitUntil(记录任务);
+      else 记录任务.catch(() => {});
+    }
     值队列.clear();
     处理值远程写入器();
     try {
@@ -2848,6 +3158,13 @@ async function 处理网页套接字请求(请求417) {
             } catch (忽略值) {}
           }
           if (!轻量协议结果.hasError) {
+            if (!当前握手keyId) {
+              try {
+                const 默认key = await 查key(认证令牌);
+                if (默认key && !默认key.enabled) throw new Error(错误_无效用户);
+                if (默认key?.enabled) 当前握手keyId = 默认key.id;
+              } catch (忽略值) {}
+            }
             协议类型 = 解码64('dmxlc3M=');
             const {
               addressType: 地址类型395,
@@ -2883,6 +3200,13 @@ async function 处理网页套接字请求(请求417) {
             } catch (忽略值) {}
           }
           if (!值结果.hasError) {
+            if (!当前握手keyId && !传输路径) {
+              try {
+                const 默认key = await 查key(认证令牌);
+                if (默认key && !默认key.enabled) throw new Error(错误_无效用户);
+                if (默认key?.enabled) 当前握手keyId = 默认key.id;
+              } catch (忽略值) {}
+            }
             协议类型 = atob('dHJvamFu');
             const {
               addressType: 地址类型388,
@@ -2909,7 +3233,7 @@ async function 处理值值384(地址类型383, 主机, 端口数字, 原始数�
   // 优先使用客户端path参数，其次回退到全局配置
   const 实际回退 = 请求回退 || 回退地址;
   const 实际地区 = 请求地区 || 当前工作器地区;
-  const 实际地区匹配 = 请求值380 !== null ? 请求值380 : 启用地区匹配;
+  const 实际地区匹配 = false;
   const 实际代理配置 = 请求代理配置 || 已解析代理5配置;
   const 实际代理已启用 = 请求代理配置 ? true : 是否代理已启用;
   const 值数据378 = 处理值值8数组(原始数据);
@@ -3873,6 +4197,12 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
   const 读取器179 = 本地值180.getReader({
     mode: 'byob'
   });
+  const 读取失败 = 消息 => {
+    try {
+      读取器179.releaseLock();
+    } catch (忽略值) {}
+    return 消息;
+  };
   try {
     let 结果值178 = await 读取器179.readAtLeast(1 + 16 + 1, 获取扩展超文本缓冲());
     let 本地值177 = 0;
@@ -3883,16 +4213,19 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
     const 标识175 = 缓存.slice(1, 1 + 16);
     const 唯一标识174 = 解析唯一标识扩展超文本(唯一标识字符串);
     let 命中key = null;
-    if (!验证唯一标识扩展超文本(标识175, 唯一标识174)) {
+    if (验证唯一标识扩展超文本(标识175, 唯一标识174)) {
+      命中key = await 查key(唯一标识字符串);
+      if (!命中key || !命中key.enabled) return 读取失败('invalid UUID');
+    } else {
       // xhttp 的 UUID 位于协议头，直接按 16 字节还原并查询启用的 key。
       命中key = await 查keyByXhttp字节(Array.from(标识175));
-      if (!命中key || !命中key.enabled) return `invalid UUID`;
+      if (!命中key || !命中key.enabled) return 读取失败('invalid UUID');
     }
     const 值长度173 = 缓存[1 + 16];
     const 地址值1 = 1 + 16 + 1 + 值长度173 + 1 + 2 + 1;
     if (地址值1 + 1 > 本地值177) {
       if (结果值178.done) {
-        return `header too short`;
+        return 读取失败('header too short');
       }
       索引 = 地址值1 + 1 - 本地值177;
       结果值178 = await 读取器179.readAtLeast(索引, 获取扩展超文本缓冲());
@@ -3901,7 +4234,7 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
     }
     const 命令 = 缓存[1 + 16 + 1 + 值长度173];
     if (命令 !== 1) {
-      return `unsupported command: ${命令}`;
+      return 读取失败(`unsupported command: ${命令}`);
     }
     const 端口172 = (缓存[地址值1 - 1 - 2] << 8) + 缓存[地址值1 - 1 - 1];
     const 本地值171 = 缓存[地址值1 - 1];
@@ -3914,12 +4247,12 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
       头部长度 = 地址值1 + 1 + 缓存[地址值1];
     }
     if (头部长度 < 0) {
-      return 'read address type failed';
+      return 读取失败('read address type failed');
     }
     索引 = 头部长度 - 本地值177;
     if (索引 > 0) {
       if (结果值178.done) {
-        return `read address failed`;
+        return 读取失败('read address failed');
       }
       结果值178 = await 读取器179.readAtLeast(索引, 获取扩展超文本缓冲());
       本地值177 += 结果值178.value.length;
@@ -3939,7 +4272,7 @@ async function 读取扩展超文本头部(本地值180, 唯一标识字符串) 
         break;
     }
     if (主机名170.length < 1) {
-      return 'failed to parse hostname';
+      return 读取失败('failed to parse hostname');
     }
     const 数据 = 缓存.slice(头部长度);
     return {
@@ -4143,37 +4476,26 @@ async function 处理扩展超文本客户端(主体128, 唯一标识, 请求国
       本地值127 = true;
     }
   };
+  const 拒绝连接 = () => {
+    本地值126();
+    return null;
+  };
   // 多 key 统计：本次连接命中的 keyId（0=兼容全局令牌）
   let 当前握手keyId = 0;
-  let 上行字节 = 0;
-  let 下行字节 = 0;
   try {
     let 本地值125;
     try {
       本地值125 = await 读取扩展超文本头部(主体128, 唯一标识);
     } catch (头部错误) {
-      // 多 key：全局令牌失败，用协议头 16 字节查 key 表
-      if (头部错误 && 头部错误._xhttpBytes) {
-        try {
-          const k = await 查keyByXhttp字节(Array.from(头部错误._xhttpBytes));
-          if (k && k.enabled) {
-            // xhttp 头部 reader 已被消费，无法重读；命中则放行（记录 keyId），但数据流已丢
-            // 实际多 key xhttp 需客户端用对应 UUID 的 path/订阅，握手层只做统计
-            当前握手keyId = k.id;
-          }
-        } catch (忽略值) {}
-        return null;
-      }
-      return null;
+      return 拒绝连接();
     }
     if (typeof 本地值125 !== 'object' || !本地值125) {
-      if (typeof 本地值125 === 'string') return null;
-      return null;
+      return 拒绝连接();
     }
     当前握手keyId = 本地值125.keyId || 当前握手keyId;
     const 远程连接 = await 连接值远程扩展超文本(本地值125, 回退地址, '13.230.34.30');
     if (远程连接 === null) {
-      return null;
+      return 拒绝连接();
     }
     const 连接值 = Promise.race([(async () => {
       try {
@@ -4183,19 +4505,29 @@ async function 处理扩展超文本客户端(主体128, 唯一标识, 请求国
       try {
         await 远程连接.uploader.done;
       } catch (错误123) {}
-    })(), 处理扩展超文本值195(值超时值).then(() => {})]).finally(() => {
-      // xhttp 流的精确字节计数需要包装 reader/writer；首版至少记录连接、国家和首包字节。
-      if (当前握手keyId) 记录流量(当前握手keyId, 上行字节, 下行字节, 请求国家);
+    })(), 处理扩展超文本值195(值超时值).then(() => {})]).finally(async () => {
+      // 两个计数器分别覆盖客户端上行和服务端下行，连接结束时一次性写入 D1。
       try {
-        远程连接.close();
-      } catch (忽略值122) {}
-      try {
-        远程连接.downloader.abort();
-      } catch (忽略值121) {}
-      try {
-        远程连接.uploader.abort();
-      } catch (忽略值) {}
-      本地值126();
+        if (当前握手keyId) {
+          await 记录流量(
+            当前握手keyId,
+            远程连接.uploader.counter.get(),
+            远程连接.downloader.counter.get(),
+            请求国家
+          );
+        }
+      } finally {
+        try {
+          远程连接.close();
+        } catch (忽略值122) {}
+        try {
+          远程连接.downloader.abort();
+        } catch (忽略值121) {}
+        try {
+          远程连接.uploader.abort();
+        } catch (忽略值) {}
+        本地值126();
+      }
     });
     return {
       readable: 远程连接.downloader.readable,
@@ -4207,7 +4539,7 @@ async function 处理扩展超文本客户端(主体128, 唯一标识, 请求国
   }
 }
 async function 处理扩展超文本值(请求119) {
-  // 多 key：xhttp 无独立握手校验，仅靠路径/订阅 UUID。这里取请求国家供统计
+  // 多 key：xhttp UUID 位于请求体头部，由处理扩展超文本客户端校验。
   try {
     const 国家 = 请求119.headers.get('CF-IPCountry') || '';
     const 结果 = await 处理扩展超文本客户端(请求119.body, 认证令牌, 国家);
@@ -4499,9 +4831,15 @@ td.uuid:hover{color:var(--cyan)}
 input.t{padding:7px 10px;background:rgba(0,0,0,.4);border:1px solid var(--border);border-radius:6px;color:var(--text);font:inherit;font-size:13px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 label{font-size:11px;color:var(--dim);letter-spacing:1px}
+.transport-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
+.transport-field{display:flex;flex-direction:column;gap:6px}
+.transport-field span{font-size:11px;color:var(--dim);letter-spacing:.4px}
+.transport-field input{width:100%}
+.transport-hint{color:var(--dim);font-size:11px;line-height:1.6;margin-top:16px}
+.transport-status{color:var(--mint);font-size:12px;min-height:18px}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:10px 20px;background:rgba(10,8,32,.95);border:1px solid var(--cyan);border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none}
 .toast.show{opacity:1}
-@media(max-width:680px){.wrap{padding:12px}table{font-size:12px}th:nth-child(4),td:nth-child(4){display:none}.row-md{display:none}}
+@media(max-width:680px){.wrap{padding:12px}table{font-size:12px}th:nth-child(4),td:nth-child(4){display:none}.row-md{display:none}.transport-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -4511,6 +4849,7 @@ label{font-size:11px;color:var(--dim);letter-spacing:1px}
     <div class="tabs">
       <div class="tab active" data-t="keys">Key 管理</div>
       <div class="tab" data-t="stats">统计概览</div>
+      <div class="tab" data-t="transport">传输调节</div>
     </div>
     <div class="actions">
       <button class="btn primary" id="add">+ 新建 Key</button>
@@ -4524,22 +4863,42 @@ label{font-size:11px;color:var(--dim);letter-spacing:1px}
   <div class="panel" id="p-stats">
     <div class="card" id="stats-box"><div class="empty">选择某个 Key 查看流量与国家分布</div></div>
   </div>
+  <div class="panel" id="p-transport">
+    <div class="card">
+      <div class="transport-grid">
+        <label class="transport-field"><span>上行合并大小 packetUp</span><input class="t" id="t-packetUp" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="transport-field"><span>下行聚合大小 packetDown</span><input class="t" id="t-packetDown" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="transport-field"><span>上传队列上限 packetQueue</span><input class="t" id="t-packetQueue" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="transport-field"><span>下行尾包阈值 packetTail</span><input class="t" id="t-packetTail" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="transport-field"><span>聚合等待 packetDelay (ms)</span><input class="t" id="t-packetDelay" type="text" inputmode="decimal" autocomplete="off"></label>
+        <label class="transport-field"><span>竞速连接数 connectRace</span><input class="t" id="t-connectRace" type="text" inputmode="numeric" autocomplete="off"></label>
+        <label class="transport-field"><span>首字节超时 firstByteTimeout (ms)</span><input class="t" id="t-firstByteTimeout" type="text" inputmode="numeric" autocomplete="off"></label>
+      </div>
+      <div class="row" style="margin-top:18px"><button class="btn primary" id="save-transport">保存参数</button><button class="btn" id="reset-transport">恢复默认</button><span class="transport-status" id="transport-status"></span></div>
+      <div class="transport-hint">支持字节数或 K/KB/M/MB 单位；超出安全范围会自动限制。默认值适合大多数连接，高带宽可增大 packetUp/packetDown，高延迟可保持 connectRace=2。</div>
+    </div>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 <script>
 const $=s=>document.querySelector(s);
 const toast=m=>{const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);};
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=b=>{b=+b||0;const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<u.length-1){b/=1024;i++;}return b.toFixed(b<10&&i>0?2:0)+u[i];};
 const fmtTime=s=>s?s.replace('T',' ').replace('Z','').slice(0,19):'—';
 let keys=[];
+const transportKeys=['packetUp','packetDown','packetQueue','packetTail','packetDelay','connectRace','firstByteTimeout'];
+const transportDefaults={packetUp:'32K',packetDown:'32K',packetQueue:'512K',packetTail:'512',packetDelay:'0',connectRace:'2',firstByteTimeout:'3500'};
 async function load(){const r=await fetch('/admin/api/keys');const j=await r.json();keys=j.data||[];render();}
+async function loadTransport(){const status=$('#transport-status');status.textContent='读取中…';try{const r=await fetch('/api/config');const j=await r.json();if(!r.ok)throw new Error(j.error||'读取失败');transportKeys.forEach(k=>{$('#t-'+k).value=j[k]??transportDefaults[k];});status.textContent='已加载';}catch(e){status.textContent=e.message||'读取失败';}}
+async function saveTransport(reset=false){const status=$('#transport-status');const body={};transportKeys.forEach(k=>{body[k]=reset?'':$('#t-'+k).value.trim();});status.textContent='保存中…';try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok||j.success===false)throw new Error(j.message||j.error||'保存失败');transportKeys.forEach(k=>{$('#t-'+k).value=j.config?.[k]??transportDefaults[k];});status.textContent='已保存';toast('传输参数已生效');}catch(e){status.textContent=e.message||'保存失败';}}
 function render(){
   const tb=$('#tb');tb.innerHTML='';
   if(!keys.length){tb.innerHTML='<tr><td colspan="6" class="empty">还没有 Key，点右上「新建 Key」创建</td></tr>';return;}
   keys.forEach(k=>{
     const tr=document.createElement('tr');
-    tr.innerHTML='<td class="uuid" title="点击复制">'+k.uuid+'</td>'+
-      '<td>'+(k.name||'')+'</td>'+
+    tr.innerHTML='<td class="uuid" title="点击复制">'+esc(k.uuid)+'</td>'+
+      '<td>'+esc(k.name)+'</td>'+
       '<td><span class="badge '+(k.enabled?'on':'off')+'">'+(k.enabled?'启用':'停用')+'</span></td>'+
       '<td class="flow">↑'+fmt(k.upload)+'<br>↓'+fmt(k.download)+'</td>'+
       '<td>'+fmtTime(k.last_used_at)+'</td>'+
@@ -4561,17 +4920,19 @@ $('#add').onclick=async()=>{
   const j=await r.json();if(j.success){toast('已创建：'+j.uuid);load();}else toast(j.error||'创建失败');
 };
 $('#refresh').onclick=load;
+$('#save-transport').onclick=()=>saveTransport(false);
+$('#reset-transport').onclick=()=>saveTransport(true);
 $('#logout').onclick=async()=>{await fetch('/logout',{method:'POST'});window.location.href='/admin';};
-document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));t.classList.add('active');$('#p-'+t.dataset.t).classList.add('active');});
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));t.classList.add('active');$('#p-'+t.dataset.t).classList.add('active');if(t.dataset.t==='transport')loadTransport();});
 async function showStat(uuid){
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
   document.querySelector('.tab[data-t="stats"]').classList.add('active');$('#p-stats').classList.add('active');
   const r=await fetch('/admin/api/stats/'+uuid);const j=await r.json();
-  if(!j.success){$('#stats-box').innerHTML='<div class="empty">'+(j.error||'查询失败')+'</div>';return;}
+  if(!j.success){$('#stats-box').innerHTML='<div class="empty">'+esc(j.error||'查询失败')+'</div>';return;}
   const cs=j.countries||[];const max=Math.max(1,...cs.map(c=>c.bytes));
   let html='<div style="margin-bottom:12px"><b>流量</b> ↑'+fmt(j.upload)+' &nbsp;↓'+fmt(j.download)+'</div>';
   if(cs.length){html+='<table><thead><tr><th>国家</th><th>连接</th><th>流量</th><th>占比</th></tr></thead><tbody>';
-    cs.forEach(c=>{html+='<tr><td>'+c.country+'</td><td>'+c.hit_count+'</td><td>'+fmt(c.bytes)+'</td><td><div class="stat-row"><div class="bar"><i style="width:'+(c.bytes/max*100).toFixed(0)+'%"></i></div><span>'+fmt(c.bytes)+'</span></div></td></tr>';});
+    cs.forEach(c=>{html+='<tr><td>'+esc(c.country)+'</td><td>'+c.hit_count+'</td><td>'+fmt(c.bytes)+'</td><td><div class="stat-row"><div class="bar"><i style="width:'+(c.bytes/max*100).toFixed(0)+'%"></i></div><span>'+fmt(c.bytes)+'</span></div></td></tr>';});
     html+='</tbody></table>';}else{html+='<div class="empty">暂无国家分布数据（产生流量后刷新）</div>';}
   $('#stats-box').innerHTML=html;
 }
@@ -4586,7 +4947,11 @@ async function 处理登录请求(请求) {
   try { 主体 = await 请求.json(); } catch (忽略值) { return JSON响应({ error: '请求体无效' }, 400); }
   const 用户名 = 主体.username || '';
   const 密码 = 主体.password || '';
-  const 账号id = await 验证管理员账号(用户名, 密码);
+  const 配置错误 = 获取登录配置错误();
+  if (配置错误) return JSON响应({ error: `${配置错误}。请访问 /admin/setup-check 查看诊断。` }, 503);
+  const 验证结果 = await 验证管理员账号(用户名, 密码);
+  if (验证结果.错误) return JSON响应({ error: `${验证结果.错误}。请访问 /admin/setup-check 查看诊断。` }, 503);
+  const 账号id = 验证结果.账号id;
   if (!账号id) return JSON响应({ error: '账号或密码错误' }, 401);
   const 令牌 = await 签发会话(账号id);
   return JSON响应({ success: true }, 200, { 'Set-Cookie': 设置会话cookie头(令牌) });
@@ -4620,19 +4985,34 @@ async function 处理管理API(请求, 网址, 账号id) {
     const keyId = parseInt(匹配[1], 10);
     // 校验归属
     let 行;
-    try { 行 = await 数据库.prepare('SELECT account_id FROM keys WHERE id=?').bind(keyId).first(); } catch (忽略值) {}
-    if (!行 || 行.account_id !== 账号id) return JSON响应({ error: 'key 不存在' }, 404);
+    try { 行 = await 数据库.prepare('SELECT account_id, uuid, trojan_hash FROM keys WHERE id=?').bind(keyId).first(); } catch (忽略值) {}
+    if (!行 || Number(行.account_id) !== Number(账号id)) return JSON响应({ error: 'key 不存在' }, 404);
     if (请求.method === 'DELETE') {
-      try { await 数据库.prepare('DELETE FROM keys WHERE id=?').bind(keyId).run(); return JSON响应({ success: true }); }
+      try {
+        await 数据库.prepare('DELETE FROM keys WHERE id=?').bind(keyId).run();
+        清理key缓存(行);
+        return JSON响应({ success: true });
+      }
       catch (错误值) { return JSON响应({ error: '删除失败: ' + 错误值.message }, 500); }
     }
     if (请求.method === 'PATCH') {
       let 主体; try { 主体 = await 请求.json(); } catch (忽略值) { return JSON响应({ error: '请求体无效' }, 400); }
+      const 更新字段 = [];
+      const 更新参数 = [];
       if (主体.enabled !== undefined) {
-        try { await 数据库.prepare('UPDATE keys SET enabled=? WHERE id=?').bind(主体.enabled ? 1 : 0, keyId).run(); } catch (错误值) {}
+        更新字段.push('enabled=?');
+        更新参数.push(主体.enabled ? 1 : 0);
       }
       if (主体.name !== undefined) {
-        try { await 数据库.prepare('UPDATE keys SET name=? WHERE id=?').bind(String(主体.name).slice(0, 64), keyId).run(); } catch (错误值) {}
+        更新字段.push('name=?');
+        更新参数.push(String(主体.name).slice(0, 64));
+      }
+      if (!更新字段.length) return JSON响应({ success: true });
+      try {
+        await 数据库.prepare(`UPDATE keys SET ${更新字段.join(', ')} WHERE id=?`).bind(...更新参数, keyId).run();
+        清理key缓存(行);
+      } catch (错误值) {
+        return JSON响应({ error: '更新失败: ' + 错误值.message }, 500);
       }
       return JSON响应({ success: true });
     }
@@ -4668,8 +5048,11 @@ async function 处理配置接口(请求54, 环境值 = {}) {
         }
       });
     }
+    const 当前配置 = 获取有效配置快照(环境值);
+    更新传输参数(当前配置);
     return new Response(JSON.stringify({
-      ...获取有效配置快照(环境值),
+      ...当前配置,
+      ...获取当前传输配置(),
       kvEnabled: true
     }), {
       headers: {
@@ -4697,6 +5080,9 @@ async function 处理配置接口(请求54, 环境值 = {}) {
           键值配置[键] = 值;
         }
       }
+      const 当前配置 = 获取有效配置快照(环境值);
+      更新传输参数(当前配置);
+      Object.assign(键值配置, 获取当前传输配置());
       await 保存键值配置();
       更新配置值();
       if (新配置.yx !== undefined) {
@@ -4705,7 +5091,10 @@ async function 处理配置接口(请求54, 环境值 = {}) {
       return new Response(JSON.stringify({
         success: true,
         message: '配置已保存',
-        config: 获取有效配置快照(环境值)
+        config: {
+          ...获取有效配置快照(环境值),
+          ...获取当前传输配置()
+        }
       }), {
         headers: {
           'Content-Type': 'application/json'
@@ -4949,7 +5338,8 @@ function 更新配置值() {
       当前工作器地区 = '';
     }
   }
-  启用地区匹配 = !(有效配置.rm && 有效配置.rm.toLowerCase() === 'no');
+  // 地区仅用于诊断/回退信息，不参与节点筛选或优先级。
+  启用地区匹配 = false;
   启用明文 = 有效配置.ev === 'yes';
   启用木马 = 有效配置.et === 'yes';
   启用扩展传输 = 有效配置.ex === 'yes';
@@ -4963,6 +5353,7 @@ function 更新配置值() {
   自定义域名系统 = 有效配置.customDNS || 配置默认值.customDNS;
   自定义加密客户端问候域名 = 有效配置.customECHDomain || 配置默认值.customECHDomain;
   自定义应用层协议协商 = 规范化应用层协议协商(有效配置.alpn || '');
+  更新传输参数(有效配置);
   禁用非传输层安全 = 有效配置.dkby === 'yes' || 启用加密客户端问候;
   const 降级控制值 = (有效配置.qj || '').toLowerCase();
   启用代理降级 = 降级控制值 === 'no';
