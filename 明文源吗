@@ -9584,6 +9584,91 @@ function 是否有效域名(域名) {
   const 域名正则 = /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
   return 域名正则.test(域名);
 }
+function 解析优选地址项(值, 默认端口 = '443') {
+  let 文本 = String(值 || '').trim().replace(/^[,\s'"`]+|[,\s'"`]+$/g, '');
+  if (文本.startsWith('[') && !/^\[[\da-f:]+\](?::\d{1,5})?(?:#|$)/i.test(文本)) 文本 = 文本.slice(1).trim();
+  if (文本.endsWith(']') && !/^\[[\da-f:]+\](?::\d{1,5})?(?:#|$)/i.test(文本)) 文本 = 文本.slice(0, -1).trim();
+  if (!文本 || 文本.startsWith('#') || 文本.startsWith('//')) return null;
+  let 名称 = '';
+  const 井号索引 = 文本.indexOf('#');
+  if (井号索引 >= 0) {
+    名称 = 文本.slice(井号索引 + 1).trim();
+    文本 = 文本.slice(0, 井号索引).trim();
+  }
+  let 地址 = '';
+  let 端口 = '';
+  const 方括号地址 = 文本.match(/^\[([\da-f:]+)\](?::(\d{1,5}))?$/i);
+  if (方括号地址) {
+    地址 = `[${方括号地址[1]}]`;
+    端口 = 方括号地址[2] || String(默认端口);
+  } else if (/^[\da-f]{0,4}(?::[\da-f]{0,4}){2,}$/i.test(文本)) {
+    // 裸 IPv6 没有可靠的端口分界，按默认端口处理。
+    地址 = `[${文本}]`;
+    端口 = String(默认端口);
+  } else {
+    const 普通地址 = 文本.match(/^((?:\d{1,3}\.){3}\d{1,3}|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})(?::(\d{1,5}))?$/);
+    if (!普通地址) return null;
+    地址 = 普通地址[1];
+    端口 = 普通地址[2] || String(默认端口);
+  }
+  const 数字端口 = Number(端口);
+  if (!Number.isInteger(数字端口) || 数字端口 < 1 || 数字端口 > 65535) return null;
+  return `${地址}:${数字端口}${名称 ? `#${名称}` : ''}`;
+}
+function 提取优选数组区域(文本) {
+  const 变量匹配 = /["']?(?:cfip|proxyip|proxyIP|preferred(?:IPs?|Addresses?))["']?\s*(?:=|:)\s*\[/i.exec(String(文本 || ''));
+  if (!变量匹配) return null;
+  const 起始位置 = 变量匹配.index + 变量匹配[0].length;
+  let 深度 = 1;
+  let 引号 = '';
+  let 转义 = false;
+  let 行注释 = false;
+  let 块注释 = false;
+  for (let 索引 = 起始位置; 索引 < 文本.length; 索引++) {
+    const 字符 = 文本[索引];
+    const 下一个字符 = 文本[索引 + 1] || '';
+    if (行注释) {
+      if (字符 === '\n' || 字符 === '\r') 行注释 = false;
+      continue;
+    }
+    if (块注释) {
+      if (字符 === '*' && 下一个字符 === '/') {
+        块注释 = false;
+        索引++;
+      }
+      continue;
+    }
+    if (引号) {
+      if (转义) {
+        转义 = false;
+      } else if (字符 === '\\') {
+        转义 = true;
+      } else if (字符 === 引号) {
+        引号 = '';
+      }
+      continue;
+    }
+    if (字符 === '/' && 下一个字符 === '/') {
+      行注释 = true;
+      索引++;
+      continue;
+    }
+    if (字符 === '/' && 下一个字符 === '*') {
+      块注释 = true;
+      索引++;
+      continue;
+    }
+    if (字符 === '"' || 字符 === "'" || 字符 === '`') {
+      引号 = 字符;
+    } else if (字符 === '[') {
+      深度++;
+    } else if (字符 === ']') {
+      深度--;
+      if (深度 === 0) return 文本.slice(起始位置, 索引);
+    }
+  }
+  return null;
+}
 async function 解析文本值数组(内容) {
   var 已处理 = 内容.replace(/[	"'\r\n]+/g, ',').replace(/,+/g, ',');
   if (已处理.charAt(0) == ',') 已处理 = 已处理.slice(1);
@@ -9634,19 +9719,20 @@ async function 获取优选接口(网址列表, 默认端口 = '443', 超时 = 3
       } catch (事件值15) {
         return;
       }
-      const 行列表 = 文本.trim().split('\n').map(行值14 => 行值14.trim()).filter(行值 => 行值);
+      // JS/JSON 优选数组只交给下面的字符串提取器，避免误把源码中的其他域名当成节点。
+      const 数组区域文本 = 提取优选数组区域(文本);
+      const 列表区域匹配 = 数组区域文本 === null ? null : [null, 数组区域文本];
+      const 行列表 = (列表区域匹配 ? '' : 文本).trim().split('\n').map(行值14 => 行值14.trim()).filter(行值 => 行值);
       const 是否值 = 行列表.length > 1 && 行列表[0].includes(',');
       const 六版地址模式 = /^[^\[\]]*:[^\[\]]*:[^\[\]]/;
-      const 普通地址正则 = /^(\[[\da-fA-F:]+\]|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})(?::(\d{1,5}))?(?:#([^,'"`\r\n]+))?$/;
       if (!是否值) {
-        行列表.forEach(行13 => {
-          const 地址匹配 = 行13.replace(/^[,'"`\s]+|[,'"`\s]+$/g, '').match(普通地址正则);
-          if (!地址匹配) return;
-          const 主机部分 = 地址匹配[1];
-          const 端口部分 = 地址匹配[2];
-          const 备注 = 地址匹配[3] ? `#${地址匹配[3].trim()}` : '';
-          const 端口12 = new URL(网址).searchParams.get('port') || 默认端口;
-          结果列表.add(`${主机部分}:${端口部分 || 端口12}${备注}`);
+        let 端口12 = 默认端口;
+        try {
+          端口12 = new URL(网址).searchParams.get('port') || 默认端口;
+        } catch (忽略网址) {}
+        行列表.flatMap(行13 => 行13.split(/[,;]/)).forEach(行值12 => {
+          const 地址项 = 解析优选地址项(行值12, 端口12);
+          if (地址项) 结果列表.add(地址项);
         });
       } else {
         const 头部列表 = 行列表[0].split(',').map(头值11 => 头值11.trim());
@@ -9677,8 +9763,7 @@ async function 获取优选接口(网址列表, 默认端口 = '443', 超时 = 3
       // 兼容 EdgeTunnel 等仓库把优选列表写在 JS/JSON 字符串数组中的格式。
       const 引用地址正则 = /['"`]([^'"`\r\n]{1,256})['"`]/g;
       const 地址正则 = /^(\[[\da-f:]+\]|(?:\d{1,3}\.){3}\d{1,3}|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})(?::(\d{1,5}))?(?:#([^,'"`\r\n]+))?$/i;
-      const 列表区域匹配 = 文本.match(/(?:cfip|proxyip|proxyIP|preferred(?:IPs?|Addresses?))\s*=\s*\[([\s\S]*?)\]\s*;/i);
-      const 引用文本 = 列表区域匹配 ? 列表区域匹配[1] : 文本;
+      const 引用文本 = 列表区域匹配 ? 列表区域匹配[1] : (/^\s*[\[{]/.test(文本) ? '' : 文本);
       let 引用匹配;
       while ((引用匹配 = 引用地址正则.exec(引用文本)) !== null) {
         const 候选地址 = 引用匹配[1].trim();
