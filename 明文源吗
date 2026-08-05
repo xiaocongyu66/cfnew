@@ -8667,10 +8667,10 @@ label{font-size:11px;color:var(--dim);letter-spacing:1px}
   <header>
     <div class="brand">CFnew</div>
     <div class="tabs">
-      <button type="button" class="tab active" data-t="keys" role="tab" aria-selected="true" aria-controls="p-keys">Key 管理</button>
-      <button type="button" class="tab" data-t="stats" role="tab" aria-selected="false" aria-controls="p-stats">统计概览</button>
-      <button type="button" class="tab" data-t="transport" role="tab" aria-selected="false" aria-controls="p-transport">传输调节</button>
-      <button type="button" class="tab" data-t="config" role="tab" aria-selected="false" aria-controls="p-config">配置管理</button>
+      <button type="button" class="tab active" data-t="keys" role="tab" aria-selected="true" aria-controls="p-keys" onclick="activateTab(this.dataset.t)">Key 管理</button>
+      <button type="button" class="tab" data-t="stats" role="tab" aria-selected="false" aria-controls="p-stats" onclick="activateTab(this.dataset.t)">统计概览</button>
+      <button type="button" class="tab" data-t="transport" role="tab" aria-selected="false" aria-controls="p-transport" onclick="activateTab(this.dataset.t)">传输调节</button>
+      <button type="button" class="tab" data-t="config" role="tab" aria-selected="false" aria-controls="p-config" onclick="activateTab(this.dataset.t)">配置管理</button>
     </div>
     <div class="actions">
       <button class="btn primary" id="add">+ 新建 Key</button>
@@ -9009,7 +9009,6 @@ setClick('#save-transport',()=>saveTransport(false));
 setClick('#reset-transport',()=>saveTransport(true));
 setClick('#logout',async()=>{await fetch('/logout',{method:'POST'});window.location.href='/admin';});
 
-// Use one delegated handler so tab switching still works if a panel is refreshed or extended.
 function activateTab(name){
   const tabs=[...document.querySelectorAll('.tab')];
   const target=tabs.find(tab=>tab.dataset.t===name);
@@ -9024,18 +9023,6 @@ function activateTab(name){
   if(name==='transport')loadTransport();
   if(name==='config')loadConfig();
   return true;
-}
-const tabsRoot=document.querySelector('.tabs');
-if(tabsRoot){
-  tabsRoot.addEventListener('click',event=>{
-    const tab=event.target.closest('.tab');
-    if(tab&&tabsRoot.contains(tab))activateTab(tab.dataset.t);
-  });
-  tabsRoot.addEventListener('keydown',event=>{
-    if(event.key!=='Enter'&&event.key!==' ')return;
-    const tab=event.target.closest('.tab');
-    if(tab&&tabsRoot.contains(tab)){event.preventDefault();activateTab(tab.dataset.t);}
-  });
 }
 onAll('.client-btn','click',event=>showClientUrl(event.currentTarget.dataset.client,true));
 on('#config-key','change',()=>{const active=document.querySelector('.client-btn.active');if(active)showClientUrl(active.dataset.client);});
