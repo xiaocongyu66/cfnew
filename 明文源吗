@@ -546,12 +546,14 @@ async function 初始化数据库(本地值) {
       await 数据库.prepare('INSERT INTO accounts (username, password_hash, salt) VALUES (?,?,?)').bind(初始管理员用户, 哈希, 盐).run();
     }
     // 将旧版环境变量 UUID 纳入 key 表，使默认 UUID 也能统计流量。
-    if (环境UUID) {
+    // 未配置 u 时继续使用旧版内置令牌，避免管理页出现空 Key 列表。
+    const 默认UUID = 环境UUID || (是否有效格式(认证令牌) ? 认证令牌 : '');
+    if (默认UUID) {
       const 账号 = 存在 || await 数据库.prepare('SELECT id FROM accounts WHERE username=?').bind(初始管理员用户).first();
       if (账号?.id) {
-        const trojan哈希 = await 计算trojan哈希(环境UUID);
-        const xhttp字节 = 计算xhttp字节(环境UUID);
-        await 数据库.prepare('INSERT OR IGNORE INTO keys (account_id, uuid, name, trojan_hash, xhttp_bytes) VALUES (?,?,?,?,?)').bind(账号.id, 环境UUID, '默认 UUID', trojan哈希, xhttp字节).run();
+        const trojan哈希 = await 计算trojan哈希(默认UUID);
+        const xhttp字节 = 计算xhttp字节(默认UUID);
+        await 数据库.prepare('INSERT OR IGNORE INTO keys (account_id, uuid, name, trojan_hash, xhttp_bytes) VALUES (?,?,?,?,?)').bind(账号.id, 默认UUID, '默认 UUID', trojan哈希, xhttp字节).run();
       }
     }
     已初始化账号 = true;
@@ -8970,7 +8972,17 @@ function addLatencyToYx(){
   if(!chosen.length){toast('请先选择测速结果');return;}
   const values=chosen.map(v=>v.host+':'+v.port+'#'+v.name);const field=configEl('yx');const old=(field.value||'').trim();field.value=old?old+','+values.join(','):values.join(',');toast('已加入 yx，请保存配置');
 }
-async function load(){const r=await fetch('/admin/api/keys');const j=await r.json();keys=j.data||[];render();}
+async function load(){
+  try{
+    const r=await fetch('/admin/api/keys',{credentials:'same-origin',cache:'no-store'});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||j.success===false)throw new Error(j.error||'Key 列表加载失败（会话可能已过期）');
+    keys=Array.isArray(j.data)?j.data:[];render();
+  }catch(error){
+    keys=[];render();
+    const tb=$('#tb');if(tb)tb.innerHTML='<tr><td colspan="6" class="empty">'+esc(error.message||'Key 列表加载失败')+'</td></tr>';
+  }
+}
 async function loadTransport(){const status=$('#transport-status');status.textContent='读取中…';try{const r=await fetch('/api/config');const j=await r.json();if(!r.ok)throw new Error(j.error||'读取失败');transportKeys.forEach(k=>{$('#t-'+k).value=j[k]??transportDefaults[k];});status.textContent='已加载';}catch(e){status.textContent=e.message||'读取失败';}}
 async function saveTransport(reset=false){const status=$('#transport-status');const body={};transportKeys.forEach(k=>{body[k]=reset?'':$('#t-'+k).value.trim();});status.textContent='保存中…';try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok||j.success===false)throw new Error(j.message||j.error||'保存失败');transportKeys.forEach(k=>{$('#t-'+k).value=j.config?.[k]??transportDefaults[k];});status.textContent='已保存';toast('传输参数已生效');}catch(e){status.textContent=e.message||'保存失败';}}
 function render(){
@@ -9024,6 +9036,7 @@ function activateTab(name){
   if(name==='config')loadConfig();
   return true;
 }
+window.activateTab=activateTab;
 onAll('.client-btn','click',event=>showClientUrl(event.currentTarget.dataset.client,true));
 on('#config-key','change',()=>{const active=document.querySelector('.client-btn.active');if(active)showClientUrl(active.dataset.client);});
 setClick('#copy-base-url',()=>copyText(configBaseUrl()));
