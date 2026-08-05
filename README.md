@@ -169,6 +169,15 @@
 | `yxby` | yes | 可选，设为`yes`关闭所有优选功能 |
 | `ae` | yes | 可选，设为`yes`允许API管理（默认关闭） |
 
+`yxURL` 示例（每行一个来源，失败来源会被单独忽略）：
+
+```text
+https://raw.githubusercontent.com/onlyno999/edgetunnel-Automatic/main/_worker.js
+https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt
+```
+
+也可以填写托管的纯 IP/域名列表，例如 `1.1.1.1:443#HK`；重复的 `IP:端口` 只保留一个节点。`edgetunnel/edgetunnel` 主仓库不包含优选 IP 列表，不能直接作为 `yxURL` 来源。
+
 #### 传输速度参数（KV）
 
 这些参数通过管理 API 保存到 KV 后立即生效，单位可写字节或 `K/KB/M/MB`：
